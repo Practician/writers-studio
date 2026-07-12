@@ -89,7 +89,15 @@ async function generateContentWithRetry(
         break;
       }
 
-      const isRetryable = status === 503 || status === 429 || status === 500;
+      // Сетевые обрывы (ECONNRESET, undici "terminated", fetch failed) приходят без
+      // HTTP-статуса — их тоже ретраим, иначе один сбой TLS роняет весь конвейер.
+      const message = String(error?.message ?? "");
+      const causeCode = error?.cause?.code ?? error?.code;
+      const isNetworkError = status == null && (
+        causeCode === "ECONNRESET" || causeCode === "ETIMEDOUT" || causeCode === "ECONNREFUSED"
+        || message.includes("terminated") || message.includes("fetch failed")
+      );
+      const isRetryable = status === 503 || status === 429 || status === 500 || isNetworkError;
       if (!isRetryable || attempt === maxRetries) break;
 
       const delayMs = Math.min(1000 * 2 ** attempt, 8000) + Math.random() * 500;
@@ -106,7 +114,9 @@ async function generateContentWithRetry(
 
   if (shouldFallback) {
     console.warn(`Gemini model "${params.model}" unavailable. Falling back to "${fallbackModel}".`);
-    return await ai.models.generateContent({ ...params, model: fallbackModel });
+    // Фолбэк-модель тоже может быть перегружена — даём ей те же ретраи с бэкоффом.
+    // Рекурсия не зациклится: params.model === fallbackModel блокирует второй фолбэк.
+    return await generateContentWithRetry(ai, { ...params, model: fallbackModel }, { maxRetries, fallbackModel });
   }
 
   throw lastError;
@@ -129,7 +139,7 @@ async function generateStructured<T>(
   prompt: string,
   responseSchema: any,
   label: string,
-  maxOutputTokens = 8192,
+  maxOutputTokens = 16384,
 ): Promise<T> {
   const response = await generateContentWithRetry(ai, {
     model,
@@ -166,7 +176,7 @@ app.post("/api/writer/author", async (req, res) => {
         buildProfilePrompt(request),
         voiceSheetSchema,
         "Паспорт голоса",
-        8192,
+        32768,
       );
       return res.json({ profile, model });
     }
@@ -192,7 +202,7 @@ app.post("/api/writer/author", async (req, res) => {
         }),
         voiceSheetSchema,
         "Паспорт голоса",
-        8192,
+        32768,
       );
 
       const analysis = await generateStructured<any>(
@@ -202,7 +212,7 @@ app.post("/api/writer/author", async (req, res) => {
         buildAnalysisPrompt(request),
         analysisSchema,
         "Карта фактов",
-        16384,
+        32768,
       );
 
       const structure = splitTextStructure(request.sourceText);
@@ -214,7 +224,9 @@ app.post("/api/writer/author", async (req, res) => {
           temperature: request.strength === "conservative" ? 0.55 : request.strength === "deep" ? 0.8 : 0.7,
           responseMimeType: "application/json",
           responseSchema: rewriteSchema(structure.blocks.length),
-          maxOutputTokens: 32768,
+          // У Gemini 3.x «мышление» расходует бюджет вывода — на длинных главах
+          // 32768 не хватает, ответ обрезается.
+          maxOutputTokens: 65536,
           ...(model.includes("2.5") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
         },
       }, { fallbackModel: FALLBACK_AUTHOR_MODEL });
@@ -241,7 +253,7 @@ app.post("/api/writer/author", async (req, res) => {
               temperature: 0.65,
               responseMimeType: "application/json",
               responseSchema: rewriteSchema(priorityIndexes.length),
-              maxOutputTokens: 12288,
+              maxOutputTokens: 24576,
               ...(model.includes("2.5") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
             },
           }, { fallbackModel: FALLBACK_AUTHOR_MODEL });
@@ -270,7 +282,7 @@ app.post("/api/writer/author", async (req, res) => {
         buildAuditPrompt(request, request.sourceText, result, voiceSheet, analysis),
         auditSchema,
         "Финальный аудит",
-        12288,
+        32768,
       );
       audit.factIssues = Array.isArray(audit.factIssues) ? audit.factIssues : [];
       audit.protectedTermIssues = Array.isArray(audit.protectedTermIssues) ? audit.protectedTermIssues : [];
@@ -673,7 +685,7 @@ ${text || ""}
               temperature: 0.65,
               responseMimeType: "application/json",
               responseSchema: rewriteSchema(flaggedIndexes.length),
-              maxOutputTokens: 12288,
+              maxOutputTokens: 24576,
               ...(selectedModel.includes("2.5") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
             },
           });
