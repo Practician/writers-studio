@@ -1,4 +1,6 @@
-export type DetectorLabel = "AI" | "LIKELY_AI" | "LIKELY_HUMAN" | "HUMAN";
+// UNKNOWN — новые версии нейродетектора помечают так короткие сегменты,
+// не прошедшие классификацию; в stats они не учитываются.
+export type DetectorLabel = "AI" | "LIKELY_AI" | "LIKELY_HUMAN" | "HUMAN" | "UNKNOWN";
 
 export interface DetectorSegment {
   len: number;
@@ -24,7 +26,7 @@ export interface DetectorReport {
   fullText: string;
 }
 
-const LABELS = new Set<DetectorLabel>(["AI", "LIKELY_AI", "LIKELY_HUMAN", "HUMAN"]);
+const LABELS = new Set<DetectorLabel>(["AI", "LIKELY_AI", "LIKELY_HUMAN", "HUMAN", "UNKNOWN"]);
 
 function expectObject(value: unknown, name: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -55,7 +57,7 @@ export function validateDetectorReport(value: unknown): DetectorReport {
   };
 
   let offset = 0;
-  const counts: Record<DetectorLabel, number> = { AI: 0, LIKELY_AI: 0, LIKELY_HUMAN: 0, HUMAN: 0 };
+  const counts: Record<DetectorLabel, number> = { AI: 0, LIKELY_AI: 0, LIKELY_HUMAN: 0, HUMAN: 0, UNKNOWN: 0 };
   const segments = root.segments.map((rawSegment, index): DetectorSegment => {
     const segment = expectObject(rawSegment, `segments[${index}]`);
     if (typeof segment.text !== "string" || !segment.text.length) {
@@ -77,7 +79,9 @@ export function validateDetectorReport(value: unknown): DetectorReport {
 
   const textLength = expectInteger(root.text_length, "text_length");
   if (textLength !== offset) throw new Error("text_length не совпадает с суммой сегментов");
-  if (stats.segments_count !== segments.length) throw new Error("stats.segments_count не совпадает с segments.length");
+  // UNKNOWN-сегменты не входят в stats.segments_count
+  const classifiedCount = segments.length - counts.UNKNOWN;
+  if (stats.segments_count !== classifiedCount) throw new Error("stats.segments_count не совпадает с числом классифицированных сегментов");
   if (
     stats.AI_count !== counts.AI ||
     stats.LIKELY_AI_count !== counts.LIKELY_AI ||

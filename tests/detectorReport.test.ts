@@ -75,6 +75,22 @@ test("detector report rejects inconsistent counters", () => {
   assert.throws(() => validateDetectorReport({ ...reportValue, text_length: 13 }), /text_length/u);
 });
 
+// Новые версии нейродетектора добавляют UNKNOWN-сегменты, не учитываемые в stats
+test("detector report accepts UNKNOWN segments outside of stats", () => {
+  const report = validateDetectorReport({
+    ...reportValue,
+    segments: [
+      { len: 4, text: "ИИ. ", label: "AI" },
+      { len: 3, text: "?? ", label: "UNKNOWN" },
+      { len: 8, text: "Человек.", label: "HUMAN" },
+    ],
+    text_length: 15,
+  });
+  assert.equal(report.segments.length, 3);
+  assert.equal(report.stats.segments_count, 2);
+  assert.equal(isAiSegment(report.segments[1]), false);
+});
+
 test("JSON can be extracted from a ZIP without changing its content", async () => {
   const json = JSON.stringify(reportValue);
   assert.equal(await extractJsonFromZip(storedZip("report.json", json)), json);
