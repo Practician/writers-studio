@@ -1,0 +1,842 @@
+import React, { useEffect, useState } from "react";
+import { Sparkles, Wand2, ArrowRight, Copy, Check, ChevronRight, HelpCircle, FileText, CheckCircle2, AlertCircle } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import { Story, Chapter, TextSelection, AuthorEditTarget, AuthorProfileRecord, HumanizeReport } from "../types";
+import AuthorEditorPanel from "./AuthorEditorPanel";
+import { loadAuthorProfile } from "../lib/authorStorage";
+import { VOICE_PRESETS } from "../../server/humanStyle";
+
+interface AIPanelProps {
+  story: Story;
+  currentDraft: string;
+  selectedText: string;
+  textSelection: TextSelection | null;
+  onInsertText: (text: string, actionType: "append" | "replace") => void;
+  onApplyAuthorEdit: (text: string, target: AuthorEditTarget) => boolean;
+  activeChapter?: Chapter;
+  onUpdateStoryChapters?: (chapters: Chapter[]) => void;
+  selectedModel?: string;
+  openAuthorRequest?: number;
+}
+
+export default function AIPanel({ story, currentDraft, selectedText, textSelection, onInsertText, onApplyAuthorEdit, activeChapter, onUpdateStoryChapters, selectedModel, openAuthorRequest }: AIPanelProps) {
+  const [activeTool, setActiveTool] = useState<"continue" | "improve" | "author" | "brainstorm">("continue");
+  useEffect(() => {
+    if (openAuthorRequest) setActiveTool("author");
+  }, [openAuthorRequest]);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Continuation States
+  const [continueMode, setContinueMode] = useState<"paragraphs" | "whole_chapter" | "multi_chapters">("paragraphs");
+  const [continuePrompt, setContinuePrompt] = useState("");
+  const [selectedBatchChapters, setSelectedBatchChapters] = useState<string[]>([]);
+  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; status: string } | null>(null);
+
+  // Style Improver States
+  const [stylePreset, setStylePreset] = useState("sensory");
+  const [improvePrompt, setImprovePrompt] = useState("");
+
+  // Brainstorming States
+  const [brainstormCategory, setBrainstormCategory] = useState("Идея для сюжета");
+  const [brainstormTopic, setBrainstormTopic] = useState("");
+
+  // Humanized Generation States
+  const [humanize, setHumanize] = useState(true);
+  const [voicePreset, setVoicePreset] = useState("neutral");
+  const [authorProfile, setAuthorProfile] = useState<AuthorProfileRecord | null>(null);
+  const [humanizeReport, setHumanizeReport] = useState<HumanizeReport | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadAuthorProfile(story.id)
+      .then((profile) => { if (!cancelled) setAuthorProfile(profile ?? null); })
+      .catch(() => { if (!cancelled) setAuthorProfile(null); });
+    return () => { cancelled = true; };
+  }, [story.id, activeTool]);
+
+  // Дополняет запрос генерации данными для «очеловечивания с первого прохода»
+  const applyHumanizePayload = (payload: any) => {
+    payload.humanize = humanize;
+    if (!humanize) return;
+    if (authorProfile?.voiceSheet) payload.voiceSheet = authorProfile.voiceSheet;
+    if (authorProfile?.sample && authorProfile.sample.trim().length >= 300) {
+      payload.authorSample = authorProfile.sample;
+    }
+    if (!authorProfile?.voiceSheet) payload.voicePreset = voicePreset;
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(result);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleUseResult = (actionType: "append" | "replace") => {
+    onInsertText(result, actionType);
+  };
+
+  // Detect Materials for Chapter Generation
+  const getPrevChapter = () => {
+    if (!activeChapter || !story.chapters) return null;
+    const currentIndex = story.chapters.findIndex(ch => ch.id === activeChapter.id);
+    if (currentIndex > 0) {
+      return story.chapters[currentIndex - 1];
+    }
+    return null;
+  };
+
+  const getBibleSummary = () => {
+    if (story.worldBible && story.worldBible.trim()) {
+      return { found: true, text: "Библия мира заполнена" };
+    }
+    const totalRules = story.worldRules?.length || 0;
+    if (totalRules > 0) {
+      return { found: true, text: `${totalRules} записей лора` };
+    }
+    return { found: false, text: "Не заполнено (будет использовано описание книги)" };
+  };
+
+  const getPlanSummary = () => {
+    if (story.bookPlan && story.bookPlan.trim()) {
+      return { found: true, text: "План сюжета заполнен" };
+    }
+    const planChapter = story.chapters?.find(ch => 
+      ch.title.toLowerCase().includes("план") || 
+      ch.title.toLowerCase().includes("сюжет")
+    );
+    if (planChapter && planChapter.content.trim()) {
+      return { found: true, text: `Найден («${planChapter.title}»)` };
+    }
+    return { found: false, text: "Не заполнено (будет использовано описание книги)" };
+  };
+
+  const handleBatchGenerate = async () => {
+    if (selectedBatchChapters.length === 0) {
+      alert("Пожалуйста, выберите хотя бы одну главу для генерации!");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    setResult("");
+    setBatchProgress({ current: 0, total: selectedBatchChapters.length, status: "Подготовка..." });
+
+    let currentChapters = [...story.chapters];
+
+    try {
+      for (let i = 0; i < selectedBatchChapters.length; i++) {
+        const chapterId = selectedBatchChapters[i];
+        const ch = currentChapters.find(c => c.id === chapterId);
+        if (!ch) continue;
+
+        setBatchProgress({
+          current: i + 1,
+          total: selectedBatchChapters.length,
+          status: `Генерируем «${ch.title}»...`
+        });
+
+        const currentIndex = currentChapters.findIndex(c => c.id === chapterId);
+        const prevCh = currentIndex > 0 ? currentChapters[currentIndex - 1] : null;
+        const prevChapterContent = prevCh ? `Глава: ${prevCh.title}\n\n${prevCh.content}` : "";
+
+        const worldBibleText = story.worldBible || story.worldRules?.map(r => `[${r.title}]: ${r.content}`).join("\n\n") || story.description;
+        const bookPlanText = story.bookPlan || "";
+
+        const batchPayload: any = {
+          action: "generate_full_chapter",
+          title: story.title,
+          genre: story.genre,
+          description: story.description,
+          currentChapterTitle: ch.title,
+          currentChapterSummary: ch.summary || "",
+          previousChapter: prevChapterContent,
+          worldBible: worldBibleText,
+          bookPlan: bookPlanText,
+          customPrompt: continuePrompt,
+          model: selectedModel,
+        };
+        applyHumanizePayload(batchPayload);
+
+        const response = await fetch("/api/writer/ai", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(batchPayload)
+        });
+
+        if (!response.ok) {
+          const errData = await response.json();
+          throw new Error(`Ошибка при генерации главы «${ch.title}»: ${errData.error || "Неизвестная ошибка"}`);
+        }
+
+        const data = await response.json();
+        
+        currentChapters = currentChapters.map(c => 
+          c.id === chapterId ? { ...c, content: data.result } : c
+        );
+
+        if (onUpdateStoryChapters) {
+          onUpdateStoryChapters(currentChapters);
+        }
+      }
+
+      setResult(`Успешно сгенерировано и сохранено ${selectedBatchChapters.length} глав! 🎉 Вы можете переключить главы в левом меню, чтобы ознакомиться с результатом.`);
+      setSelectedBatchChapters([]);
+    } catch (err: any) {
+      setError(err.message || "Произошла непредвиденная ошибка при пакетной генерации.");
+    } finally {
+      setLoading(false);
+      setBatchProgress(null);
+    }
+  };
+
+  const handleAction = async () => {
+    setLoading(true);
+    setError(null);
+    setResult("");
+    setHumanizeReport(null);
+
+    let payload: any = { action: activeTool, model: selectedModel };
+    if (activeTool === "continue" || activeTool === "improve") {
+      applyHumanizePayload(payload);
+    }
+
+    if (activeTool === "continue") {
+      if (continueMode === "whole_chapter") {
+        const prevCh = getPrevChapter();
+        const prevChapterContent = prevCh ? `Глава: ${prevCh.title}\n\n${prevCh.content}` : "";
+        
+        // World Bible (joined worldRules)
+        const worldBibleText = story.worldBible || story.worldRules?.map(r => `[${r.title}]: ${r.content}`).join("\n\n") || story.description;
+        
+        // Plan
+        const planChapter = story.chapters?.find(ch => 
+          ch.title.toLowerCase().includes("план") || 
+          ch.title.toLowerCase().includes("сюжет")
+        );
+        const bookPlanText = story.bookPlan || (planChapter ? planChapter.content : "");
+
+        payload.action = "generate_full_chapter";
+        payload.title = story.title;
+        payload.genre = story.genre;
+        payload.description = story.description;
+        payload.currentChapterTitle = activeChapter?.title || "Без названия";
+        payload.currentChapterSummary = activeChapter?.summary || "Без синопсиса";
+        payload.previousChapter = prevChapterContent;
+        payload.worldBible = worldBibleText;
+        payload.bookPlan = bookPlanText;
+        payload.customPrompt = continuePrompt;
+      } else {
+        payload.text = currentDraft;
+        payload.customPrompt = continuePrompt;
+      }
+    } else if (activeTool === "improve") {
+      payload.text = selectedText || currentDraft; // defaults to full draft if no selection
+      payload.stylePreset = stylePreset;
+      payload.customPrompt = improvePrompt;
+    } else if (activeTool === "brainstorm") {
+      payload.category = brainstormCategory;
+      payload.topic = brainstormTopic || `История под названием «${story.title}»: ${story.description}`;
+    }
+
+    try {
+      const response = await fetch("/api/writer/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || "Ошибка соединения с ИИ.");
+      }
+
+      const data = await response.json();
+      setResult(data.result);
+      setHumanizeReport(data.humanizeReport ?? null);
+    } catch (err: any) {
+      setError(err.message || "Произошла непредвиденная ошибка ИИ.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const prevCh = getPrevChapter();
+  const bibleSummary = getBibleSummary();
+  const planSummary = getPlanSummary();
+
+  return (
+    <div className="flex flex-col h-full bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden" id="ai-panel-container">
+      {/* Tool Selector Tabs */}
+      <div className="flex border-b border-slate-800 bg-slate-950/40 p-1 text-xs font-medium">
+        <button
+          onClick={() => { setActiveTool("continue"); setResult(""); }}
+          className={`flex-1 py-2 text-center rounded-lg transition-colors cursor-pointer ${
+            activeTool === "continue"
+              ? "bg-blue-600/25 text-blue-400 border border-blue-500/30 font-semibold"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          Продолжить сюжет
+        </button>
+        <button
+          onClick={() => { setActiveTool("improve"); setResult(""); }}
+          className={`flex-1 py-2 text-center rounded-lg transition-colors cursor-pointer ${
+            activeTool === "improve"
+              ? "bg-blue-600/25 text-blue-400 border border-blue-500/30 font-semibold"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          Улучшить стиль
+        </button>
+        <button
+          onClick={() => { setActiveTool("author"); setResult(""); }}
+          className={`flex-1 py-2 text-center rounded-lg transition-colors cursor-pointer ${
+            activeTool === "author"
+              ? "bg-emerald-600/20 text-emerald-300 border border-emerald-500/30 font-semibold"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          Голос автора
+        </button>
+        <button
+          onClick={() => { setActiveTool("brainstorm"); setResult(""); }}
+          className={`flex-1 py-2 text-center rounded-lg transition-colors cursor-pointer ${
+            activeTool === "brainstorm"
+              ? "bg-blue-600/25 text-blue-400 border border-blue-500/30 font-semibold"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          Генератор идей
+        </button>
+      </div>
+
+      {/* Main Form Fields */}
+      <div className="p-4 flex-1 overflow-y-auto space-y-4">
+        {activeTool === "continue" && (
+          <div className="space-y-4">
+            {/* Mode Switcher */}
+            <div className="bg-slate-950/40 p-1 rounded-xl border border-slate-800 flex text-[10px] font-semibold">
+              <button
+                type="button"
+                onClick={() => setContinueMode("paragraphs")}
+                className={`flex-1 py-1.5 text-center rounded-lg transition-all ${
+                  continueMode === "paragraphs"
+                    ? "bg-slate-800 text-slate-100 border border-slate-700/50"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                📄 Абзацы
+              </button>
+              <button
+                type="button"
+                onClick={() => setContinueMode("whole_chapter")}
+                className={`flex-1 py-1.5 text-center rounded-lg transition-all ${
+                  continueMode === "whole_chapter"
+                    ? "bg-purple-950/40 text-purple-300 border border-purple-800/40"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                📚 Глава
+              </button>
+              <button
+                type="button"
+                onClick={() => setContinueMode("multi_chapters")}
+                className={`flex-1 py-1.5 text-center rounded-lg transition-all ${
+                  continueMode === "multi_chapters"
+                    ? "bg-indigo-950/40 text-indigo-300 border border-indigo-800/40"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                🗂️ Ряд глав
+              </button>
+            </div>
+
+            {continueMode === "paragraphs" && (
+              <div className="space-y-3.5">
+                <div className="bg-blue-950/20 border border-blue-900/30 p-3 rounded-lg">
+                  <p className="text-[11px] text-blue-400 leading-relaxed">
+                    ℹ️ ИИ прочитает текст текущей главы и напишет следующие 1-3 абзаца, идеально подстраиваясь под ваш слог и тон повествования.
+                  </p>
+                </div>
+                <div className="space-y-1">
+                  <label className="block text-[11px] text-slate-400 font-semibold uppercase tracking-wider">
+                    Пожелание к продолжению (необязательно)
+                  </label>
+                  <textarea
+                    value={continuePrompt}
+                    onChange={(e) => setContinuePrompt(e.target.value)}
+                    placeholder="Например: Сделай концовку таинственной, пусть неожиданно погаснет свет, или капитан услышит странный шорох."
+                    rows={3}
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded p-2.5 text-xs text-slate-200 focus:ring-1 focus:ring-blue-500 outline-none font-sans"
+                  />
+                </div>
+              </div>
+            )}
+
+            {continueMode === "whole_chapter" && (
+              <div className="space-y-4">
+                <div className="bg-purple-950/25 border border-purple-900/30 p-3.5 rounded-xl space-y-3">
+                  <h4 className="text-[11px] text-purple-300 font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 animate-pulse text-purple-400" />
+                    ИИ-синтез всей главы
+                  </h4>
+                  <p className="text-[10px] text-slate-400 leading-relaxed">
+                    Муза автоматически сопоставит законы вашей Библии мира с главами сюжета и напишет полноценную художественную главу с сохранением стиля.
+                  </p>
+
+                  <div className="border-t border-purple-900/20 pt-2 space-y-1.5 text-[10px]">
+                    <div className="flex justify-between items-center text-slate-300">
+                      <span className="text-slate-400">Предыдущая глава:</span>
+                      <span className="font-medium flex items-center gap-1">
+                        {prevCh ? (
+                          <>
+                            <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                            «{prevCh.title}»
+                          </>
+                        ) : (
+                          <>
+                            <AlertCircle className="w-3 h-3 text-amber-400" />
+                            Первая глава (Пролог)
+                          </>
+                        )}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between items-center text-slate-300">
+                      <span className="text-slate-400">Библия мира:</span>
+                      <span className="font-medium flex items-center gap-1">
+                        {bibleSummary.found ? (
+                          <>
+                            <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                            {bibleSummary.text}
+                          </>
+                        ) : (
+                          <>
+                            <AlertCircle className="w-3 h-3 text-amber-400" />
+                            {bibleSummary.text}
+                          </>
+                        )}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between items-center text-slate-300">
+                      <span className="text-slate-400">План сюжета:</span>
+                      <span className="font-medium flex items-center gap-1">
+                        {planSummary.found ? (
+                          <>
+                            <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                            {planSummary.text}
+                          </>
+                        ) : (
+                          <>
+                            <AlertCircle className="w-3 h-3 text-amber-400" />
+                            {planSummary.text}
+                          </>
+                        )}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-[11px] text-slate-400 font-semibold uppercase tracking-wider">
+                    Особые пожелания и фокус для новой главы
+                  </label>
+                  <textarea
+                    value={continuePrompt}
+                    onChange={(e) => setContinuePrompt(e.target.value)}
+                    placeholder="Пример: Сэм должен проникнуть в архив корпорации и найти доказательства экспериментов. В конце главы за ним должна начаться погоня."
+                    rows={4}
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-purple-500 rounded p-2.5 text-xs text-slate-200 outline-none font-sans"
+                  />
+                </div>
+              </div>
+            )}
+
+            {continueMode === "multi_chapters" && (
+              <div className="space-y-4">
+                <div className="bg-indigo-950/25 border border-indigo-900/30 p-3.5 rounded-xl space-y-3">
+                  <h4 className="text-[11px] text-indigo-300 font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 animate-pulse text-indigo-400" />
+                    Пакетное написание глав
+                  </h4>
+                  <p className="text-[10px] text-slate-400 leading-relaxed">
+                    Выберите несколько глав из списка ниже. Муза последовательно сгенерирует художественный текст для каждой из них, опираясь на сюжет и предыдущий контекст.
+                  </p>
+                </div>
+
+                {/* Chapters Selection List */}
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] text-slate-400 font-semibold uppercase tracking-wider">
+                    Выберите главы для генерации:
+                  </label>
+                  <div className="max-h-[160px] overflow-y-auto border border-slate-800 bg-slate-950/40 rounded-lg p-2 space-y-1">
+                    {story.chapters?.map((ch) => {
+                      const isSelected = selectedBatchChapters.includes(ch.id);
+                      return (
+                        <label
+                          key={ch.id}
+                          className="flex items-center gap-2 p-1.5 rounded hover:bg-slate-800/40 cursor-pointer text-xs text-slate-300 transition-colors"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedBatchChapters([...selectedBatchChapters, ch.id]);
+                              } else {
+                                setSelectedBatchChapters(selectedBatchChapters.filter(id => id !== ch.id));
+                              }
+                            }}
+                            className="rounded border-slate-800 bg-slate-950 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5"
+                          />
+                          <span className="truncate flex-1">{ch.title}</span>
+                          {ch.content?.trim() ? (
+                            <span className="text-[9px] px-1 bg-emerald-950 border border-emerald-900/50 text-emerald-400 rounded">Есть текст</span>
+                          ) : (
+                            <span className="text-[9px] px-1 bg-slate-900 border border-slate-800 text-slate-400 rounded">Пусто</span>
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-[11px] text-slate-400 font-semibold uppercase tracking-wider">
+                    Общие пожелания к этим главам (необязательно)
+                  </label>
+                  <textarea
+                    value={continuePrompt}
+                    onChange={(e) => setContinuePrompt(e.target.value)}
+                    placeholder="Например: Сделай диалоги более динамичными, держи атмосферу саспенса."
+                    rows={3}
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500 rounded p-2.5 text-xs text-slate-200 outline-none font-sans"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTool === "improve" && (
+          <div className="space-y-3.5">
+            <div className="bg-slate-950/40 p-3.5 rounded-lg border border-slate-800">
+              <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-1">Выделенный фрагмент</span>
+              {selectedText ? (
+                <p className="text-xs text-slate-300 italic line-clamp-3 bg-slate-900/50 p-2 border border-slate-800/50 rounded">
+                  «{selectedText}»
+                </p>
+              ) : (
+                <p className="text-xs text-slate-400 italic">
+                  Выделите любой текст в черновике слева, чтобы улучшить конкретно его. Иначе будет отредактирована вся глава.
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-[11px] text-slate-400 font-semibold uppercase tracking-wider">
+                Стиль улучшения (Пресет)
+              </label>
+              <div className="grid grid-cols-2 gap-1.5 text-xs" id="style-presets-grid">
+                <button
+                  onClick={() => setStylePreset("sensory")}
+                  className={`p-2 border text-left rounded-lg transition-colors cursor-pointer ${
+                    stylePreset === "sensory"
+                      ? "bg-purple-950/30 text-purple-300 border-purple-800"
+                      : "bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700"
+                  }`}
+                >
+                  🎭 Красочный (Описания)
+                </button>
+                <button
+                  onClick={() => setStylePreset("dramatic")}
+                  className={`p-2 border text-left rounded-lg transition-colors cursor-pointer ${
+                    stylePreset === "dramatic"
+                      ? "bg-purple-950/30 text-purple-300 border-purple-800"
+                      : "bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700"
+                  }`}
+                >
+                  ⚡ Драматичный (Накал)
+                </button>
+                <button
+                  onClick={() => setStylePreset("concise")}
+                  className={`p-2 border text-left rounded-lg transition-colors cursor-pointer ${
+                    stylePreset === "concise"
+                      ? "bg-purple-950/30 text-purple-300 border-purple-800"
+                      : "bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700"
+                  }`}
+                >
+                  ✂️ Краткий (Динамика)
+                </button>
+                <button
+                  onClick={() => setStylePreset("lyrical")}
+                  className={`p-2 border text-left rounded-lg transition-colors cursor-pointer ${
+                    stylePreset === "lyrical"
+                      ? "bg-purple-950/30 text-purple-300 border-purple-800"
+                      : "bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700"
+                  }`}
+                >
+                  ✒️ Поэтичный (Мелодика)
+                </button>
+                <button
+                  onClick={() => setStylePreset("show_dont_tell")}
+                  className={`p-2 border col-span-2 text-left rounded-lg transition-colors cursor-pointer ${
+                    stylePreset === "show_dont_tell"
+                      ? "bg-purple-950/30 text-purple-300 border-purple-800"
+                      : "bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700"
+                  }`}
+                >
+                  🎬 Показывай, а не рассказывай
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="block text-[11px] text-slate-400 font-semibold uppercase tracking-wider">
+                Особое указание (необязательно)
+              </label>
+              <input
+                type="text"
+                value={improvePrompt}
+                onChange={(e) => setImprovePrompt(e.target.value)}
+                placeholder="Например: Добавь больше мрачных метафор или Сделай акцент на холоде вокруг."
+                className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded p-2 text-xs text-slate-200 outline-none"
+              />
+            </div>
+          </div>
+        )}
+
+        {activeTool === "brainstorm" && (
+          <div className="space-y-3.5">
+            <div className="bg-blue-950/20 border border-blue-900/30 p-3 rounded-lg">
+              <p className="text-[11px] text-blue-400 leading-relaxed">
+                ℹ️ Запустите мозговой штурм с ИИ. Он разработает набор оригинальных концепций, неожиданных поворотов сюжета или сильных конфликтов.
+              </p>
+            </div>
+            
+            <div className="space-y-1">
+              <label className="block text-[11px] text-slate-400 font-semibold uppercase tracking-wider">
+                Категория генерации
+              </label>
+              <select
+                value={brainstormCategory}
+                onChange={(e) => setBrainstormCategory(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded p-2 text-xs text-slate-200 outline-none cursor-pointer"
+              >
+                <option value="Неожиданный сюжетный поворот (Plot Twist)">⚡ Неожиданный сюжетный поворот</option>
+                <option value="Завязка сцены / Крючок (Hook)">🎣 Захватывающий зачин сцены</option>
+                <option value="Причины конфликта между персонажами">🔥 Причины конфликта персонажей</option>
+                <option value="Диалоговая заготовка / Цитаты">💬 Яркие реплики и темы диалога</option>
+                <option value="Концовка-клиффхэнгер для главы">⛓️ Остросюжетный финал главы (Клиффхэнгер)</option>
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="block text-[11px] text-slate-400 font-semibold uppercase tracking-wider">
+                О чем должна быть идея?
+              </label>
+              <input
+                type="text"
+                value={brainstormTopic}
+                onChange={(e) => setBrainstormTopic(e.target.value)}
+                placeholder="Оставьте пустым для автоанализа вашей книги, либо введите тему"
+                className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded p-2 text-xs text-slate-200 outline-none"
+              />
+            </div>
+          </div>
+        )}
+
+        {activeTool === "author" && (
+          <AuthorEditorPanel
+            story={story}
+            activeChapter={activeChapter}
+            currentDraft={currentDraft}
+            selection={textSelection}
+            selectedModel={selectedModel}
+            onApply={onApplyAuthorEdit}
+          />
+        )}
+
+        {batchProgress && (
+          <div className="p-4 bg-indigo-950/30 border border-indigo-900/40 rounded-xl space-y-3 animate-pulse">
+            <div className="flex justify-between items-center text-xs">
+              <span className="font-bold text-indigo-300">Пакетная генерация...</span>
+              <span className="font-mono text-[10px] text-indigo-400">
+                {batchProgress.current} из {batchProgress.total}
+              </span>
+            </div>
+            <div className="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden border border-slate-800">
+              <div 
+                className="bg-indigo-500 h-1.5 rounded-full transition-all duration-300" 
+                style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}
+              />
+            </div>
+            <p className="text-[10px] text-slate-400 text-center italic">{batchProgress.status}</p>
+          </div>
+        )}
+
+        {/* Humanized Generation Settings */}
+        {(activeTool === "continue" || activeTool === "improve") && (
+          <div className="bg-slate-950/40 border border-slate-800 rounded-lg p-2.5 space-y-2">
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={humanize}
+                onChange={(e) => setHumanize(e.target.checked)}
+                className="accent-emerald-500 cursor-pointer"
+              />
+              <span className="text-xs font-semibold text-slate-200">Очеловечивание текста</span>
+              <span className="text-[10px] text-slate-500">живой ритм, без штампов</span>
+            </label>
+            {humanize && (
+              authorProfile?.voiceSheet ? (
+                <p className="text-[10px] text-emerald-400 flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3" />
+                  Пишем голосом автора — по образцу из инструмента «Автор»
+                </p>
+              ) : (
+                <div className="space-y-1">
+                  <select
+                    value={voicePreset}
+                    onChange={(e) => setVoicePreset(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-slate-200 cursor-pointer"
+                  >
+                    {VOICE_PRESETS.map((preset) => (
+                      <option key={preset.id} value={preset.id}>{preset.title}</option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-slate-500">
+                    Загрузите образец текста во вкладке «Автор», чтобы ИИ писал вашим собственным голосом.
+                  </p>
+                </div>
+              )
+            )}
+          </div>
+        )}
+
+        {/* Action Button */}
+        {activeTool === "author" ? null : activeTool === "continue" && continueMode === "multi_chapters" ? (
+          <button
+            onClick={handleBatchGenerate}
+            disabled={loading || selectedBatchChapters.length === 0}
+            className="w-full py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:from-slate-800 disabled:to-slate-800 disabled:opacity-50 text-white rounded-lg text-xs font-semibold cursor-pointer transition-all flex items-center justify-center gap-2 shadow-lg"
+          >
+            {loading ? (
+              <>
+                <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                <span>Генерация {batchProgress?.current || 1} главы...</span>
+              </>
+            ) : (
+              <>
+                <Wand2 className="w-4 h-4" />
+                <span>Сгенерировать выбранные главы ({selectedBatchChapters.length})</span>
+              </>
+            )}
+          </button>
+        ) : (
+          <button
+            onClick={handleAction}
+            disabled={loading || (activeTool === "improve" && !selectedText && !currentDraft)}
+            className="w-full py-2.5 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 disabled:from-slate-800 disabled:to-slate-800 disabled:opacity-50 text-white rounded-lg text-xs font-semibold cursor-pointer transition-all flex items-center justify-center gap-2 shadow-lg"
+            id="ai-action-btn"
+          >
+            {loading ? (
+              <>
+                <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                <span>ИИ творит волшебство...</span>
+              </>
+            ) : (
+              <>
+                <Wand2 className="w-4 h-4" />
+                <span>
+                  {activeTool === "continue" && (continueMode === "whole_chapter" ? "Написать целую главу" : "Сгенерировать продолжение")}
+                  {activeTool === "improve" && "Отполировать текст"}
+                  {activeTool === "brainstorm" && "Устроить мозговой штурм"}
+                </span>
+              </>
+            )}
+          </button>
+        )}
+
+        {error && (
+          <div className="p-3 bg-red-950/30 border border-red-900/50 text-red-400 rounded-lg text-xs">
+            {error}
+          </div>
+        )}
+
+        {/* Result Block */}
+        {result && (
+          <div className="bg-slate-950/60 border border-slate-800 rounded-xl overflow-hidden mt-4" id="ai-result-block">
+            {/* Result Header */}
+            <div className="flex justify-between items-center bg-slate-900 p-2 px-3 border-b border-slate-800">
+              <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Результат ИИ</span>
+              <div className="flex gap-1">
+                <button
+                  onClick={handleCopy}
+                  className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors flex items-center gap-1 text-[10px] cursor-pointer"
+                  title="Копировать в буфер"
+                >
+                  {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+                  <span>{copied ? "Скопировано" : "Копировать"}</span>
+                </button>
+              </div>
+            </div>
+            
+            {/* Result Body */}
+            <div className="p-3.5 max-h-[280px] overflow-y-auto text-xs text-slate-200 leading-relaxed">
+              <div className="markdown-body">
+                <ReactMarkdown>{result}</ReactMarkdown>
+              </div>
+            </div>
+
+            {/* Naturalness Meter */}
+            {humanizeReport && (
+              <div className="px-3 py-2 border-t border-slate-800 bg-slate-950/40">
+                <div className="flex items-center justify-between text-[10px] text-slate-400 mb-1">
+                  <span title={humanizeReport.flaggedLabels.length ? `Найденные штампы: ${humanizeReport.flaggedLabels.join(", ")}` : "Штампы не обнаружены"}>
+                    Естественность текста: <span className="font-bold text-slate-200">{Math.max(100 - humanizeReport.scoreAfter, 0)}/100</span>
+                  </span>
+                  {humanizeReport.refinedBlocks > 0 && (
+                    <span className="text-emerald-400">само-редактура: {humanizeReport.refinedBlocks} абз.</span>
+                  )}
+                </div>
+                <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${100 - humanizeReport.scoreAfter >= 75 ? "bg-emerald-500" : 100 - humanizeReport.scoreAfter >= 50 ? "bg-yellow-500" : "bg-red-500"}`}
+                    style={{ width: `${Math.max(100 - humanizeReport.scoreAfter, 0)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Quick Insertion Actions */}
+            <div className="bg-slate-950/40 p-2.5 border-t border-slate-800 flex gap-2 justify-end">
+              {activeTool === "continue" && (
+                <button
+                  onClick={() => handleUseResult("append")}
+                  className="px-3 py-1.5 bg-blue-600/20 text-blue-400 border border-blue-500/20 hover:bg-blue-600 hover:text-white transition-all text-[11px] rounded font-semibold cursor-pointer flex items-center gap-1"
+                >
+                  Вставить в конец главы
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              )}
+              {activeTool === "improve" && (
+                <button
+                  onClick={() => handleUseResult(selectedText ? "replace" : "append")}
+                  className="px-3 py-1.5 bg-purple-600/20 text-purple-400 border border-purple-500/20 hover:bg-purple-600 hover:text-white transition-all text-[11px] rounded font-semibold cursor-pointer flex items-center gap-1"
+                >
+                  {selectedText ? "Заменить выделенное" : "Вставить в конец главы"}
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
