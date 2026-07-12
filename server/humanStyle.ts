@@ -1,3 +1,5 @@
+import { computeStyleStats } from "../src/lib/authorAudit";
+
 // Общий модуль «человечного стиля»: каталог признаков ИИ-текста, детерминированная
 // оценка (AI-tell score) и промпт-блоки, которые внедряются в генерацию, чтобы модель
 // писала очеловеченный текст с первого прохода, а не после отдельной редактуры.
@@ -200,8 +202,85 @@ export function humanStyleDirectives(): string {
 ${NEGATIVE_EXAMPLES}`;
 }
 
+// --- Детерминированные проверки качества переписанных блоков ---
+
+function normalizedSentenceTokens(sentence: string): Set<string> {
+  return new Set(sentence.toLowerCase().match(/[а-яёa-z0-9]+/giu) ?? []);
+}
+
+function jaccard(left: Set<string>, right: Set<string>): number {
+  if (!left.size || !right.size) return 0;
+  let shared = 0;
+  for (const token of left) if (right.has(token)) shared += 1;
+  return shared / (left.size + right.size - shared);
+}
+
+// Ловит два известных сбоя редактуры: раздувание блока и «два варианта одного
+// абзаца» внутри блока (почти одинаковые длинные предложения рядом).
+export function blockQualityIssues(sourceBlock: string, revisedBlock: string): string[] {
+  const issues: string[] = [];
+  if (revisedBlock.length > sourceBlock.length * 1.6 && revisedBlock.length > sourceBlock.length + 200) {
+    issues.push(`блок раздут с ${sourceBlock.length} до ${revisedBlock.length} знаков`);
+  }
+  const sentences = splitSentences(revisedBlock).filter((sentence) => wordsOf(sentence).length >= 6);
+  const tokenSets = sentences.map(normalizedSentenceTokens);
+  for (let left = 0; left < tokenSets.length; left += 1) {
+    for (let right = left + 1; right < tokenSets.length; right += 1) {
+      if (jaccard(tokenSets[left], tokenSets[right]) >= 0.75) {
+        issues.push("внутри блока два почти одинаковых предложения (черновые варианты)");
+        return issues;
+      }
+    }
+  }
+  return issues;
+}
+
+// Ритмические проблемы отдельного абзаца — для точечной доводки не только по
+// штампам, но и по «ровному» генеративному ритму.
+export function rhythmIssues(block: string): string[] {
+  const sentences = splitSentences(block);
+  if (sentences.length < 4) return [];
+  const issues: string[] = [];
+  if (sentenceBurstiness(block) < 0.35) {
+    issues.push("ровный ритм: все предложения близкой длины — нужно чередовать короткие и длинные");
+  }
+  if (repeatedOpenerShare(block) > 0.4) {
+    issues.push("однотипные зачины: соседние предложения начинаются одинаково");
+  }
+  return issues;
+}
+
+// Доля содержательно изменённых блоков (нормализованное сравнение) — чтобы
+// режимы силы редактуры были обещанием результата, а не тона просьбы.
+export function changedBlockShare(sourceBlocks: string[], revisedBlocks: string[]): number {
+  if (!sourceBlocks.length) return 0;
+  const normalize = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  let changed = 0;
+  for (let index = 0; index < sourceBlocks.length; index += 1) {
+    if (normalize(sourceBlocks[index]) !== normalize(revisedBlocks[index] ?? "")) changed += 1;
+  }
+  return changed / sourceBlocks.length;
+}
+
 // Паспорт голоса как персона рассказчика: развёрнутая «биография» даёт более
 // человечный и разнообразный текст, чем список правил.
+// Количественный портрет голоса по образцу автора: модели заметно лучше держат
+// манеру, когда цель измерима, а не описана прилагательными.
+export function quantitativeVoiceBlock(sample: string): string {
+  const stats = computeStyleStats(sample);
+  if (stats.words < 100) return "";
+  const lines = [
+    `- средняя длина предложения: ~${Math.round(stats.averageSentenceWords)} слов (разброс ±${Math.round(stats.sentenceLengthDeviation)})`,
+    `- доля коротких фраз (до 4 слов): ${Math.round(stats.shortSentenceShare * 100)}%`,
+    `- доля строк-диалогов: ${Math.round(stats.dialogueLineShare * 100)}%`,
+    `- восклицания: ~${stats.exclamationsPerThousandWords.toFixed(1)} на 1000 слов`,
+    `- многоточия: ~${stats.ellipsesPerThousandWords.toFixed(1)} на 1000 слов`,
+    `- разговорные частицы (же, ведь, ну…): ~${stats.particlesPerThousandWords.toFixed(1)} на 1000 слов`,
+    `- сравнения (будто, словно…): ~${stats.similesPerThousandWords.toFixed(1)} на 1000 слов`,
+  ];
+  return `ИЗМЕРИМЫЙ ПОРТРЕТ ГОЛОСА (статистика образца автора — держи текст в этих пределах, не копируя события):\n${lines.join("\n")}`;
+}
+
 export function voicePersonaBlock(voiceSheet: unknown): string {
   if (!voiceSheet || typeof voiceSheet !== "object") return "";
   const sheet = voiceSheet as { summary?: string; voiceRules?: string[]; avoid?: string[] };

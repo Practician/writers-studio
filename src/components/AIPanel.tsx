@@ -810,6 +810,11 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
                     style={{ width: `${Math.max(100 - humanizeReport.scoreAfter, 0)}%` }}
                   />
                 </div>
+                {(humanizeReport.unresolvedLabels?.length ?? 0) > 0 && (
+                  <p className="text-[10px] text-amber-400 mt-1">
+                    Не удалось убрать: {humanizeReport.unresolvedLabels!.join(", ")} — просмотрите вручную.
+                  </p>
+                )}
               </div>
             )}
 

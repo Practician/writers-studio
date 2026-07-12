@@ -1,6 +1,6 @@
 import { Type } from "@google/genai";
 import type { AuthorVoiceSheet } from "../src/types";
-import { AI_TELL_CATALOG } from "./humanStyle";
+import { AI_TELL_CATALOG, quantitativeVoiceBlock } from "./humanStyle";
 
 export const DEFAULT_AUTHOR_MODEL = "gemini-3.5-flash";
 export const FALLBACK_AUTHOR_MODEL = "gemini-2.5-flash";
@@ -298,7 +298,8 @@ export function buildRewritePrompt(
     deep: "Выполни содержательную стилистическую редактуру, а не орфографическую корректуру. В каждом блоке обязательно проверь и при необходимости перепиши нанизанные метафоры, олицетворения абстрактных чувств и среды, усилители без новой информации, пояснения очевидного, одинаковые зачины и гладкие универсальные формулы, если они не подтверждены паспортом голоса. Допускается глубокая перестройка фраз, но не событий, фактов, точки зрения или структуры блоков.",
   }[request.strength];
   const excerpts = selectStyleExcerpts(request.authorSample, request.sourceText);
-  return `${DATA_WARNING}\n\n<DATA role="voice-sheet">\n${JSON.stringify(voiceSheet)}\n</DATA>\n\n` +
+  const voiceStats = quantitativeVoiceBlock(request.authorSample);
+  return `${DATA_WARNING}\n\n${voiceStats ? `${voiceStats}\n\n` : ""}<DATA role="voice-sheet">\n${JSON.stringify(voiceSheet)}\n</DATA>\n\n` +
     `<DATA role="style-excerpts">\n${excerpts}\n</DATA>\n\n` +
     `<DATA role="facts-and-canon">\n${JSON.stringify(analysis)}\n</DATA>\n\n` +
     `<DATA role="source-blocks">\n${JSON.stringify(structure.blocks)}\n</DATA>\n\n` +

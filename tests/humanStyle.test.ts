@@ -2,8 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   aiTellScore,
+  blockQualityIssues,
+  changedBlockShare,
   detectAiTells,
+  quantitativeVoiceBlock,
   repeatedOpenerShare,
+  rhythmIssues,
   sentenceBurstiness,
   voicePresetById,
   VOICE_PRESETS,
@@ -55,6 +59,41 @@ test("priority blocks derive from the shared catalog", () => {
     "Сердце пропустило удар, и волна паники захлестнула его.",
   ];
   assert.deepEqual(priorityStyleBlockIndexes(blocks), [1]);
+});
+
+test("block quality guard catches inflation and duplicated draft variants", () => {
+  const source = "Я вышел на перрон и огляделся по сторонам.";
+  const inflated = source + " " + "Очень длинное продолжение с массой лишних деталей и повторов. ".repeat(8);
+  assert.ok(blockQualityIssues(source, inflated).some((issue) => issue.includes("раздут")));
+
+  const duplicated = "Я вышел на пустой перрон и огляделся по сторонам вокзала. Я вышел на пустой перрон и осмотрелся по сторонам вокзала.";
+  assert.ok(blockQualityIssues(duplicated, duplicated).some((issue) => issue.includes("одинаковых")));
+
+  assert.deepEqual(blockQualityIssues(source, "Я вышел на перрон. Пусто."), []);
+});
+
+test("rhythm issues flag flat cadence and repeated openers", () => {
+  const flat = "Он вошёл в тёмный зал и осмотрелся вокруг себя. Он сел на скамью у стены и достал сигареты. Он закурил быстро и глубоко затянулся дымом. Он ждал начала собрания уже очень долго.";
+  const issues = rhythmIssues(flat);
+  assert.ok(issues.some((issue) => issue.includes("ритм")) || issues.some((issue) => issue.includes("зачины")));
+  const lively = "Тихо. Он вошёл в зал, где под потолком среди пыльных знамён ещё жила память о праздниках, и замер у двери. Шаг. Куда теперь?";
+  assert.deepEqual(rhythmIssues(lively), []);
+});
+
+test("changed block share distinguishes cosmetic and substantive edits", () => {
+  const source = ["Первый абзац текста.", "Второй абзац текста.", "Третий абзац текста."];
+  const cosmetic = ["Первый абзац текста!", "Второй абзац — текста.", "Третий абзац текста…"];
+  assert.equal(changedBlockShare(source, cosmetic), 0);
+  const substantive = ["Совсем другой первый абзац.", "Второй абзац текста.", "И новый третий."];
+  assert.ok(changedBlockShare(source, substantive) > 0.6);
+});
+
+test("quantitative voice block reports measurable stats for long samples", () => {
+  const sample = ("Я шёл домой. Дождь лил как из ведра, и вода неслась по проспекту, закручиваясь спиралями. Ну что ж… Придётся бежать! ".repeat(20));
+  const block = quantitativeVoiceBlock(sample);
+  assert.ok(block.includes("средняя длина предложения"));
+  assert.ok(block.includes("многоточия"));
+  assert.equal(quantitativeVoiceBlock("Мало текста."), "");
 });
 
 test("voice presets are unique and resolvable", () => {

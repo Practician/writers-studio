@@ -107,6 +107,7 @@ export interface HumanizeReport {
   scoreAfter: number;
   refinedBlocks: number;
   flaggedLabels: string[];
+  unresolvedLabels?: string[];
 }
 
 export interface ChatMessage {
