@@ -44,16 +44,28 @@ const PORT = 3000;
 
 app.use(express.json({ limit: "1mb" }));
 
+// Поддерживается несколько ключей (разные проекты Google AI Studio): при
+// исчерпании дневной квоты одного ключа сервер переключается на следующий.
+// Задаются как GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3 или список
+// через запятую в GEMINI_API_KEY.
+function collectApiKeys(): string[] {
+  const raw = [process.env.GEMINI_API_KEY, process.env.GEMINI_API_KEY_2, process.env.GEMINI_API_KEY_3]
+    .filter(Boolean)
+    .join(",");
+  return [...new Set(raw.split(",").map((key) => key.trim()).filter(Boolean))];
+}
+
 // Lazy initialize Gemini client to prevent crash on startup if key is missing
 let aiClient: GoogleGenAI | null = null;
+let activeKeyIndex = 0;
 function getGeminiClient(): GoogleGenAI {
   if (!aiClient) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
+    const keys = collectApiKeys();
+    if (!keys.length) {
       throw new Error("GEMINI_API_KEY is not configured. Please add it via the Secrets panel in AI Studio.");
     }
     aiClient = new GoogleGenAI({
-      apiKey,
+      apiKey: keys[Math.min(activeKeyIndex, keys.length - 1)],
       httpOptions: {
         headers: {
           "User-Agent": "aistudio-build",
@@ -62,6 +74,16 @@ function getGeminiClient(): GoogleGenAI {
     });
   }
   return aiClient;
+}
+
+// Возвращает клиент со следующим ключом или null, если резервных не осталось.
+function rotateGeminiKey(): GoogleGenAI | null {
+  const keys = collectApiKeys();
+  if (activeKeyIndex + 1 >= keys.length) return null;
+  activeKeyIndex += 1;
+  aiClient = null;
+  console.warn(`Ключ Gemini №${activeKeyIndex} исчерпал дневную квоту — переключаюсь на резервный №${activeKeyIndex + 1} из ${keys.length}.`);
+  return getGeminiClient();
 }
 
 // A 429 whose quota resets daily (not per-minute) can't be fixed by waiting a few seconds —
@@ -89,6 +111,12 @@ async function generateContentWithRetry(
       const status = error?.status ?? error?.statusCode;
 
       if (status === 429 && isDailyQuotaExhausted(error)) {
+        // Дневную квоту не переждать ретраями, но можно сменить ключ (другой проект).
+        const rotated = rotateGeminiKey();
+        if (rotated) {
+          ai = rotated;
+          continue;
+        }
         console.warn(`Gemini model "${params.model}" hit its daily free-tier quota. Skipping retries.`);
         break;
       }
