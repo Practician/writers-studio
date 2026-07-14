@@ -1,20 +1,15 @@
 {
-  "words": 2111,
+  "words": 2161,
+  "yaPer100": 13.4,
   "local": {
     "score": 8,
-    "burstiness": 0.6,
-    "hits": [
-      "obnaruzhena-metka-spam"
-    ]
+    "burstiness": 0.6
   },
-  "yaDensityPer100": 12.9,
   "yandex": {
-    "aiPct": 74.3,
-    "stats": {
-      "AI": 8,
-      "LAI": 1,
-      "HUMAN": 3
-    }
+    "aiPct": 74.7,
+    "HUMAN": 3,
+    "AI": 9,
+    "LAI": 0
   },
-  "note": "+я density, opening segment HUMAN"
+  "note": "soft +я on 74.3 base; hard telegraph pass rejected (83%)"
 }
