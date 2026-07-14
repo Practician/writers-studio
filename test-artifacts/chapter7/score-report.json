@@ -1,4 +1,13 @@
 {
-  "words": 1267,
-  "note": "compressed ~1200 diary style"
+  "words": 1311,
+  "yaPer100": 13.9,
+  "local": {
+    "score": 11
+  },
+  "yandex": {
+    "aiPct": 72.9,
+    "HUMAN": 2,
+    "AI": 5
+  },
+  "strategy": "one-scene: keep base74 diary through palm/slit; cut L2 tour to ch8; less counter spam"
 }
