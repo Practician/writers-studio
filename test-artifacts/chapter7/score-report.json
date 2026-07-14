@@ -1,19 +1,16 @@
 {
-  "words": 1296,
+  "words": 1311,
   "yandex": {
-    "aiPct": 73.2,
+    "aiPct": 72.9,
     "HUMAN": 2,
     "AI": 5
   },
-  "llmRewrite": {
-    "gemini": {
-      "rewritten": 5,
-      "aiPct": 73.5,
-      "accepted": false
-    },
-    "groq": {
-      "rewritten": 0
-    }
+  "experiments": {
+    "shortDream": 100,
+    "shortDreamBalanced": 100,
+    "shortDreamKeepPalm": 84.9,
+    "palmExpandOnly": 87,
+    "keepBest": "e8a7f63 one-scene diary"
   },
-  "note": "manual AI-segment pass + one-scene structure; LLM rewrite did not beat 73.2"
+  "conclusion": "Укорочение сна и раздувание ладони Yandex ухудшают; лучший — e8a7f63 ~72.9%"
 }
