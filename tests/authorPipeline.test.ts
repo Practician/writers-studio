@@ -52,6 +52,17 @@ test("style excerpts are bounded and do not return the entire oversized sample",
   assert.ok(excerpts.length > 0);
 });
 
+test("style excerpts follow the paragraph scale of the source chapter", () => {
+  const sample = [
+    "Коротко. И прямо.",
+    "Длинный абзац с последовательным описанием действий героя, который сначала проверил телефон, затем ощупал стену и только после этого решился идти дальше в темноту.".repeat(3),
+    "Ещё одна короткая реплика.",
+  ].join("\n\n");
+  const source = "Предыдущая глава содержит развёрнутые абзацы с несколькими связанными действиями и наблюдениями героя.".repeat(4);
+  const excerpts = selectStyleExcerpts(sample, source, 2000);
+  assert.match(excerpts, /последовательным описанием/);
+});
+
 test("deep rewrite requires stylistic work beyond spelling corrections", () => {
   const request = validateRewriteRequest({
     action: "rewrite",

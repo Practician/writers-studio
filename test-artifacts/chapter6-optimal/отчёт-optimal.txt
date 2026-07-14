@@ -1,0 +1,10 @@
+Глава 6 — Yandex PASS (2026-07-14)
+
+Yandex (3 прогона подряд): AI%=0.0  HUMAN=9  AI=0  LIKELY_AI=0
+words=1467
+«я»≈74 (~5/100 слов)
+время 3:47: нет
+«И что дальше»: 2 (не тройная петля)
+
+Файл: src/data/labyrinth/chapter-6.txt
+DOCX: test-artifacts/chapter6-optimal/Лабиринт-Глава-6-Число-20-optimal.docx

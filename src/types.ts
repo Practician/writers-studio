@@ -108,6 +108,18 @@ export interface HumanizeReport {
   refinedBlocks: number;
   flaggedLabels: string[];
   unresolvedLabels?: string[];
+  burstiness?: number;
+  openerRepetition?: number;
+  patternDensity?: number;
+  gatePassed?: boolean;
+  passesRun?: number;
+  scenesGenerated?: number;
+  depth?: "fast" | "balanced" | "maximum";
+  mode?: "single" | "scenes";
+  candidatesTried?: number;
+  candidateScores?: number[];
+  chosenCandidate?: number;
+  detectorSegmentsRewritten?: number;
 }
 
 export interface ChatMessage {

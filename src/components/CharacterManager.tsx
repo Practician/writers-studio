@@ -6,9 +6,11 @@ interface CharacterManagerProps {
   story: Story;
   onUpdateCharacters: (characters: Character[]) => void;
   selectedModel?: string;
+  llmProvider?: "auto" | "gemini" | "nvidia" | "groq" | "openrouter";
+  llmApiFields?: Record<string, unknown>;
 }
 
-export default function CharacterManager({ story, onUpdateCharacters, selectedModel }: CharacterManagerProps) {
+export default function CharacterManager({ story, onUpdateCharacters, selectedModel, llmProvider = "auto", llmApiFields }: CharacterManagerProps) {
   const [selectedChar, setSelectedChar] = useState<Character | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -111,7 +113,7 @@ export default function CharacterManager({ story, onUpdateCharacters, selectedMo
           action: "brainstorm",
           category: "Персонаж (Character Profile)",
           topic: promptText,
-          model: selectedModel
+          ...(llmApiFields || { model: selectedModel, llmProvider }),
         }),
       });
 

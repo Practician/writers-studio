@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 // mammoth (~400 КБ) загружается динамически только при импорте .docx — см. extractDocxText
 const extractDocxText = async (arrayBuffer: ArrayBuffer): Promise<string> => {
   const mammoth = (await import("mammoth")).default;
@@ -30,6 +30,17 @@ import {
 import { Story, Chapter, Character, WorldRule, TextSelection, AuthorEditTarget } from "./types";
 import { hashText } from "./lib/authorAudit";
 import { DEFAULT_STORIES } from "./defaultData";
+import { mergeLabyrinthCanonIntoStories } from "./data/labyrinthCanon";
+import {
+  defaultModelForProvider,
+  loadLlmKeys,
+  loadLlmProvider,
+  llmRequestFields,
+  saveLlmKeys,
+  saveLlmProvider,
+  type LlmProviderChoice,
+  type StoredLlmKeys,
+} from "./lib/llmSettings";
 // Боковые панели грузятся лениво: они не нужны при первом рендере редактора,
 // а MuseChat/AIPanel тянут за собой react-markdown со всей remark-экосистемой.
 const MuseChat = React.lazy(() => import("./components/MuseChat"));
@@ -55,8 +66,75 @@ export default function App() {
   const [showNewStoryModal, setShowNewStoryModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
 
-  // Model Selection state
-  const selectedModel = "gemini-3.5-flash";
+  // LLM: провайдер + ключи (localStorage). .env на сервере — fallback.
+  const [llmProvider, setLlmProvider] = useState<LlmProviderChoice>(() => loadLlmProvider());
+  const [llmKeys, setLlmKeys] = useState<StoredLlmKeys>(() => loadLlmKeys());
+  const [showLlmSettings, setShowLlmSettings] = useState(false);
+  const [llmKeysDraft, setLlmKeysDraft] = useState<StoredLlmKeys>(() => loadLlmKeys());
+  const [llmStatus, setLlmStatus] = useState<{
+    geminiKeys: number;
+    nvidiaConfigured: boolean;
+    groqConfigured: boolean;
+    openrouterConfigured: boolean;
+    nvidiaDefaultModel: string;
+    groqDefaultModel: string;
+    openrouterDefaultModel: string;
+    keysFromEnv: { gemini: boolean; nvidia: boolean; groq: boolean; openrouter: boolean };
+  } | null>(null);
+
+  useEffect(() => {
+    saveLlmProvider(llmProvider);
+  }, [llmProvider]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/llm/status")
+      .then((r) => r.json())
+      .then((data) => {
+        if (!cancelled) {
+          setLlmStatus({
+            geminiKeys: data.geminiKeys ?? 0,
+            nvidiaConfigured: Boolean(data.nvidiaConfigured),
+            groqConfigured: Boolean(data.groqConfigured),
+            openrouterConfigured: Boolean(data.openrouterConfigured),
+            nvidiaDefaultModel: data.nvidiaDefaultModel || "deepseek-ai/deepseek-v4-flash",
+            groqDefaultModel: data.groqDefaultModel || "llama-3.3-70b-versatile",
+            openrouterDefaultModel: data.openrouterDefaultModel || "openrouter/auto",
+            keysFromEnv: data.keysFromEnv || { gemini: false, nvidia: false, groq: false, openrouter: false },
+          });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setLlmStatus(null);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const selectedModel = defaultModelForProvider(llmProvider, llmStatus);
+  const llmApiFields = useMemo(
+    () => llmRequestFields(llmProvider, llmKeys, selectedModel),
+    [llmProvider, llmKeys, selectedModel],
+  );
+
+  const providerHasKey = (id: LlmProviderChoice): boolean => {
+    if (id === "auto") return true;
+    if (id === "gemini") return Boolean(llmKeys.gemini.trim()) || Boolean(llmStatus?.keysFromEnv?.gemini) || (llmStatus?.geminiKeys ?? 0) > 0;
+    if (id === "nvidia") return Boolean(llmKeys.nvidia.trim()) || Boolean(llmStatus?.keysFromEnv?.nvidia) || Boolean(llmStatus?.nvidiaConfigured);
+    if (id === "groq") return Boolean(llmKeys.groq.trim()) || Boolean(llmStatus?.keysFromEnv?.groq) || Boolean(llmStatus?.groqConfigured);
+    if (id === "openrouter") return Boolean(llmKeys.openrouter.trim()) || Boolean(llmStatus?.keysFromEnv?.openrouter) || Boolean(llmStatus?.openrouterConfigured);
+    return false;
+  };
+
+  const openLlmSettings = () => {
+    setLlmKeysDraft(loadLlmKeys());
+    setShowLlmSettings(true);
+  };
+
+  const saveLlmSettings = () => {
+    saveLlmKeys(llmKeysDraft);
+    setLlmKeys({ ...llmKeysDraft });
+    setShowLlmSettings(false);
+  };
 
   // Chapter Publishing states
   const [showPublishSuccessModal, setShowPublishSuccessModal] = useState(false);
@@ -195,27 +273,29 @@ export default function App() {
     }
   }, [selectedChapterId, selectedStoryId]);
 
-  // 1. Initial Load and Seeding
+  // 1. Initial Load and Seeding (+ влитие канона «Лабиринт» в bible/plan/гл.5–6)
   useEffect(() => {
     const saved = localStorage.getItem("writers_studio_stories");
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
         if (parsed && parsed.length > 0) {
-          setStories(parsed);
-          
+          const merged = mergeLabyrinthCanonIntoStories(parsed);
+          setStories(merged);
+          localStorage.setItem("writers_studio_stories", JSON.stringify(merged));
+
           const savedStoryId = localStorage.getItem("writers_studio_selected_story_id");
           const savedChapterId = localStorage.getItem("writers_studio_selected_chapter_id");
-          
+
           // Sort by updatedAt descending to fallback to the most recently edited story
-          const sorted = [...parsed].sort((a: any, b: any) => (b.updatedAt || 0) - (a.updatedAt || 0));
-          const targetStory = parsed.find((s: any) => s.id === savedStoryId) || sorted[0] || parsed[0];
-          
+          const sorted = [...merged].sort((a: any, b: any) => (b.updatedAt || 0) - (a.updatedAt || 0));
+          const targetStory = merged.find((s: any) => s.id === savedStoryId) || sorted[0] || merged[0];
+
           setSelectedStoryId(targetStory.id);
-          
+
           const chapterExists = targetStory.chapters?.find((c: any) => c.id === savedChapterId);
           if (chapterExists) {
-            setSelectedChapterId(savedChapterId);
+            setSelectedChapterId(savedChapterId!);
           } else if (targetStory.chapters && targetStory.chapters.length > 0) {
             setSelectedChapterId(targetStory.chapters[0].id);
           }
@@ -226,11 +306,12 @@ export default function App() {
       }
     }
 
-    // Seed default
-    setStories(DEFAULT_STORIES);
-    setSelectedStoryId(DEFAULT_STORIES[0].id);
-    setSelectedChapterId(DEFAULT_STORIES[0].chapters[0].id);
-    localStorage.setItem("writers_studio_stories", JSON.stringify(DEFAULT_STORIES));
+    // Seed default (Лабиринт первым)
+    const seeded = mergeLabyrinthCanonIntoStories(DEFAULT_STORIES);
+    setStories(seeded);
+    setSelectedStoryId(seeded[0].id);
+    setSelectedChapterId(seeded[0].chapters[0].id);
+    localStorage.setItem("writers_studio_stories", JSON.stringify(seeded));
   }, []);
 
   // Get active story and active chapter
@@ -484,7 +565,7 @@ export default function App() {
               description: newDesc,
               worldBible: newWorldBible,
               bookPlan: newBookPlan,
-              model: selectedModel
+              ...llmApiFields,
             }),
           }),
           fetch("/api/writer/ai", {
@@ -493,7 +574,7 @@ export default function App() {
             body: JSON.stringify({
               action: "parse_import",
               text: `Библия мира (сеттинг):\n${newWorldBible}\n\nПлан сюжета и книга:\n${newBookPlan}`,
-              model: selectedModel
+              ...llmApiFields,
             }),
           })
         ]);
@@ -677,7 +758,7 @@ export default function App() {
           bookPlan: editBookPlan,
           worldBible: editWorldBible,
           customPrompt: editCustomPrompt,
-          model: selectedModel
+          ...llmApiFields,
         })
       });
 
@@ -709,7 +790,7 @@ export default function App() {
           bookPlan: editBookPlan,
           worldBible: editWorldBible,
           customPrompt: editCustomPrompt,
-          model: selectedModel
+          ...llmApiFields,
         })
       });
 
@@ -801,7 +882,7 @@ export default function App() {
         body: JSON.stringify({
           action: "parse_import",
           text: importFileContent,
-          model: selectedModel
+          ...llmApiFields,
         })
       });
       if (!response.ok) {
@@ -1266,6 +1347,60 @@ export default function App() {
 
           {/* Action Buttons */}
           <div className="flex items-center gap-2">
+            {/* LLM provider: NVIDIA / Gemini / Groq / OpenRouter / auto */}
+            <div
+              className="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-900 border border-slate-800 max-w-[min(100vw-2rem,28rem)] overflow-x-auto"
+              title={`Провайдер: ${llmProvider} · модель: ${selectedModel}`}
+              id="llm-provider-switch"
+            >
+              <button
+                type="button"
+                onClick={openLlmSettings}
+                className="p-1.5 text-slate-400 hover:text-amber-300 cursor-pointer shrink-0"
+                title="Настройки ключей API (хранятся в браузере)"
+                id="llm-settings-btn"
+              >
+                <Settings className="w-3.5 h-3.5" />
+              </button>
+              <Cpu className="w-3.5 h-3.5 text-slate-500 mr-0.5 shrink-0" />
+              {(
+                [
+                  { id: "nvidia" as const, label: "NVIDIA" },
+                  { id: "gemini" as const, label: "Gemini" },
+                  { id: "groq" as const, label: "Groq" },
+                  { id: "openrouter" as const, label: "OR" },
+                  { id: "auto" as const, label: "Все" },
+                ] as const
+              ).map((opt) => {
+                const ok = providerHasKey(opt.id);
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    disabled={!ok && opt.id !== "auto"}
+                    onClick={() => setLlmProvider(opt.id)}
+                    className={`px-1.5 py-1 rounded-md text-[10px] sm:text-[11px] font-medium transition-all cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed whitespace-nowrap ${
+                      llmProvider === opt.id
+                        ? opt.id === "nvidia"
+                          ? "bg-emerald-600/30 text-emerald-300 border border-emerald-700/50"
+                          : opt.id === "gemini"
+                            ? "bg-blue-600/30 text-blue-300 border border-blue-700/50"
+                            : opt.id === "groq"
+                              ? "bg-orange-600/30 text-orange-200 border border-orange-700/50"
+                              : opt.id === "openrouter"
+                                ? "bg-pink-600/30 text-pink-200 border border-pink-700/50"
+                                : "bg-violet-600/30 text-violet-200 border border-violet-700/50"
+                        : "text-slate-400 hover:text-slate-200 border border-transparent"
+                    }`}
+                    id={`llm-provider-${opt.id}`}
+                    title={ok || opt.id === "auto" ? opt.label : "Нет ключа — откройте ⚙ Настройки ИИ"}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+
             <button
               onClick={() => setFocusMode(!focusMode)}
               className={`p-2 rounded-lg cursor-pointer transition-all flex items-center gap-1.5 text-xs font-medium border ${
@@ -1584,6 +1719,8 @@ export default function App() {
                   story={activeStory}
                   currentDraft={activeChapter?.content || ""}
                   selectedModel={selectedModel}
+                  llmProvider={llmProvider}
+                  llmApiFields={llmApiFields}
                 />
               )}
               {activeTab === "characters" && (
@@ -1591,6 +1728,8 @@ export default function App() {
                   story={activeStory} 
                   onUpdateCharacters={handleUpdateCharacters} 
                   selectedModel={selectedModel}
+                  llmProvider={llmProvider}
+                  llmApiFields={llmApiFields}
                 />
               )}
               {activeTab === "world" && (
@@ -1598,6 +1737,8 @@ export default function App() {
                   story={activeStory} 
                   onUpdateWorldRules={handleUpdateWorldRules} 
                   selectedModel={selectedModel}
+                  llmProvider={llmProvider}
+                  llmApiFields={llmApiFields}
                 />
               )}
               {activeTab === "ai" && (
@@ -1611,6 +1752,8 @@ export default function App() {
                   activeChapter={activeChapter}
                   onUpdateStoryChapters={handleUpdateStoryChapters}
                   selectedModel={selectedModel}
+                  llmProvider={llmProvider}
+                  llmApiFields={llmApiFields}
                   openAuthorRequest={openAuthorRequest}
                 />
               )}
@@ -1619,6 +1762,83 @@ export default function App() {
           </aside>
         )}
       </div>
+
+      {/* LLM API keys settings */}
+      {showLlmSettings && (
+        <div className="fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" id="llm-settings-modal">
+          <div className="bg-[#121826] border border-slate-700 rounded-2xl w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="p-5 border-b border-slate-800 flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-bold text-slate-100 flex items-center gap-2">
+                  <Settings className="w-4 h-4 text-amber-400" />
+                  Настройки ИИ (ключи API)
+                </h2>
+                <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                  Ключи хранятся <strong className="text-slate-300">только в этом браузере</strong> (localStorage)
+                  и уходят на ваш локальный сервер. Если поле пустое — берётся ключ из <code className="text-slate-500">.env</code>.
+                  Для личного ПК на localhost это удобнее; в общий интернет ключи лучше только в .env.
+                </p>
+              </div>
+              <button type="button" onClick={() => setShowLlmSettings(false)} className="text-slate-500 hover:text-white text-lg leading-none cursor-pointer">×</button>
+            </div>
+            <div className="p-5 space-y-4 text-xs">
+              {(
+                [
+                  { key: "gemini" as const, label: "Google Gemini", hint: "aistudio.google.com/apikey", env: "GEMINI_API_KEY", envOk: llmStatus?.keysFromEnv?.gemini },
+                  { key: "nvidia" as const, label: "NVIDIA NIM", hint: "build.nvidia.com → API Key", env: "NVIDIA_API_KEY", envOk: llmStatus?.keysFromEnv?.nvidia },
+                  { key: "groq" as const, label: "Groq (быстрый free)", hint: "console.groq.com", env: "GROQ_API_KEY", envOk: llmStatus?.keysFromEnv?.groq },
+                  { key: "openrouter" as const, label: "OpenRouter (:free модели)", hint: "openrouter.ai/keys", env: "OPENROUTER_API_KEY", envOk: llmStatus?.keysFromEnv?.openrouter },
+                ]
+              ).map((row) => (
+                <div key={row.key}>
+                  <label className="flex items-center justify-between text-slate-300 mb-1">
+                    <span className="font-semibold">{row.label}</span>
+                    <span className={`text-[10px] ${row.envOk ? "text-emerald-400" : "text-slate-600"}`}>
+                      {row.envOk ? `.env ✓` : `.env пусто`}
+                    </span>
+                  </label>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    placeholder={`${row.hint} · или ${row.env}`}
+                    value={llmKeysDraft[row.key]}
+                    onChange={(e) => setLlmKeysDraft((prev) => ({ ...prev, [row.key]: e.target.value }))}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 outline-none focus:border-amber-500/60 font-mono text-[11px]"
+                  />
+                </div>
+              ))}
+              <p className="text-[10px] text-slate-500 leading-relaxed">
+                Режим <strong className="text-slate-400">Все</strong> в шапке: Gemini → NVIDIA → Groq → OpenRouter при сбоях.
+                Ключи не попадают в git (только localStorage / .env).
+              </p>
+            </div>
+            <div className="p-4 border-t border-slate-800 flex justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setLlmKeysDraft({ gemini: "", nvidia: "", groq: "", openrouter: "" });
+                }}
+                className="px-3 py-2 text-slate-400 hover:text-red-300 text-xs cursor-pointer"
+              >
+                Очистить поля
+              </button>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setShowLlmSettings(false)} className="px-3 py-2 text-slate-400 hover:text-white text-xs cursor-pointer">
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  onClick={saveLlmSettings}
+                  className="px-4 py-2 bg-amber-600/80 hover:bg-amber-500 text-white text-xs font-semibold rounded-lg cursor-pointer"
+                  id="llm-settings-save"
+                >
+                  Сохранить
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL 1: Edit Story Details */}
       {showStoryDetailsModal && activeStory && (

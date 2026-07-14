@@ -5,14 +5,31 @@ import {
   blockQualityIssues,
   changedBlockShare,
   detectAiTells,
+  flagBlocksForTouchup,
+  humanStyleDirectives,
+  humanizeGatePassed,
+  isCleanBlock,
+  paragraphAiTellScore,
+  pickBestVariant,
+  positiveVoiceFewShots,
   quantitativeVoiceBlock,
+  repeatedNgramShare,
   repeatedOpenerShare,
+  resolveHumanizeDepth,
   rhythmIssues,
   sentenceBurstiness,
   voicePresetById,
+  HUMANIZE_DEPTHS,
   VOICE_PRESETS,
+  YANDEX_DETECTOR_STYLE,
 } from "../server/humanStyle";
 import { priorityStyleBlockIndexes } from "../server/authorPipeline";
+import {
+  buildAntiRepeatNotes,
+  buildBeatPlanPrompt,
+  buildScenePrompt,
+  buildSingleChapterPrompt,
+} from "../server/chapterGenerate";
 
 test("catalog detects both legacy and new generative clichés", () => {
   const text = "Это было не просто утро. Волна ужаса накрыла его, и время словно остановилось. Повисла гробовая тишина.";
@@ -21,6 +38,16 @@ test("catalog detects both legacy and new generative clichés", () => {
   assert.ok(ids.includes("ne-prosto"));
   assert.ok(ids.includes("vremya-zamerlo"));
   assert.ok(ids.includes("grobovaya-tishina"));
+});
+
+test("humanStyleDirectives include Yandex detector style patterns", () => {
+  const block = humanStyleDirectives();
+  assert.ok(YANDEX_DETECTOR_STYLE.includes("телеграф"));
+  assert.ok(block.includes("ПАТТЕРНЫ НЕЙРОДЕТЕКТОРА"));
+  assert.ok(block.includes("умеренно"));
+  assert.ok(block.includes("Начну снова") || block.includes("дневн"));
+  // не требуем «минимум я» как единственный режим
+  assert.ok(block.includes("не вычищай до нуля") || block.includes("умеренно"));
 });
 
 test("bureaucratic language is flagged", () => {
@@ -102,4 +129,123 @@ test("voice presets are unique and resolvable", () => {
   assert.equal(voicePresetById("terse")?.title, "Резкий, рубленый");
   assert.equal(voicePresetById("nope"), undefined);
   assert.equal(voicePresetById(42), undefined);
+});
+
+test("RLHF and new structural patterns are flagged", () => {
+  const text = "Важно понять: с одной стороны он боялся, с другой надеялся. Таким образом выбора не было. Подводя итог, он шагнул.";
+  const ids = detectAiTells(text).map((hit) => hit.id);
+  assert.ok(ids.includes("vazhno-ponyat"));
+  assert.ok(ids.includes("s-odnoy-storony"));
+  assert.ok(ids.includes("podvodya-itog"));
+});
+
+test("flagBlocksForTouchup ranks dirty paragraphs first and respects limit", () => {
+  const blocks = [
+    "Обычный спокойный абзац про дорогу домой без всяких формул.",
+    "Волна ужаса накрыла его, и время словно остановилось перед лицом тьмы.",
+    "Ещё один нейтральный абзац с конкретным ключом в кармане и сухим воздухом.",
+    "Это был не просто коридор. Сердце пропустило удар с пугающей скоростью.",
+  ];
+  const flagged = flagBlocksForTouchup(blocks, 2);
+  assert.equal(flagged.length, 2);
+  assert.ok(flagged.includes(1));
+  assert.ok(flagged.includes(3));
+  // Чистые абзацы 0 и 2 не должны попасть в touchup
+  assert.ok(!flagged.includes(0));
+  assert.ok(!flagged.includes(2));
+  assert.ok(isCleanBlock(blocks[0]));
+});
+
+test("gate requires burstiness when minBurstiness set", () => {
+  const uniform = "Он вошёл в тёмный зал и осмотрелся вокруг. Она сидела у окна и читала старую книгу. Ветер стучал в раму и гнул сухие ветки. Лампа мигала над столом и чертила тени. Собака лежала у двери и тихо дышала.";
+  const score = aiTellScore(uniform);
+  // без штампов, но ровный ритм — gate по score может пройти, по burstiness — нет
+  if (score.burstiness < 0.45 && score.score <= 18) {
+    assert.equal(humanizeGatePassed(score, 18, 0.45), false);
+    assert.equal(humanizeGatePassed(score, 18, 0), true);
+  }
+  const lively = aiTellScore("Тихо. Он вошёл в зал, где под потолком ещё жила пыль праздников, и замер. Шаг. Ещё один. Ключ звенит.");
+  assert.ok(lively.burstiness >= 0.45 || lively.score < 5);
+});
+
+test("repeated n-grams detect scene overlap", () => {
+  const a = "Я шёл вдоль стены и считал шаги. Ключ светился синим. Заряд три процента.";
+  const b = "Я шёл вдоль стены и считал шаги. Ключ светился синим. Дальше поворот.";
+  const c = "Совсем другой кусок: жажда сушила губы, и я сел на пол.";
+  assert.ok(repeatedNgramShare(a, b, 4) > repeatedNgramShare(a, c, 4));
+});
+
+test("pickBestVariant prefers lower AI-tell and rejects inflated rewrites", () => {
+  const source = "Волна страха накрыла его, и время словно остановилось.";
+  const better = "Он остановился. Пальцы сами сжали ключ.";
+  const worse = "Волна ледяного ужаса накрыла его с пугающей скоростью, и время словно остановилось перед лицом тьмы.";
+  const inflated = better + " " + "Лишние детали и повторы. ".repeat(40);
+  assert.equal(pickBestVariant(source, [worse, better, inflated]), better);
+  assert.equal(pickBestVariant(source, [inflated]), source);
+});
+
+test("humanize gate and depth resolution", () => {
+  const clean = aiTellScore("Я шёл вдоль стены и считал шаги. Ключ грел ладонь. Сорок один.");
+  assert.equal(humanizeGatePassed(clean, 18), true);
+  const dirty = aiTellScore("Это был не просто страх. Волна ужаса накрыла его, и время словно остановилось.");
+  assert.equal(humanizeGatePassed(dirty, 8), false);
+  assert.equal(resolveHumanizeDepth("maximum").id, "maximum");
+  assert.equal(resolveHumanizeDepth("nope").id, "balanced");
+  assert.ok(HUMANIZE_DEPTHS.maximum.sceneGeneration);
+  assert.ok(HUMANIZE_DEPTHS.maximum.minAuthorSampleChars >= 300);
+});
+
+test("paragraph score boosts short stamped blocks", () => {
+  const short = paragraphAiTellScore("Волна ужаса накрыла его.");
+  assert.ok(short.score >= 25);
+});
+
+test("positive voice few-shots extract sample paragraphs", () => {
+  const sample = [
+    "Я вышел на остановку. Дождь лил стеной, и автобус опаздывал уже минут двадцать.",
+    "",
+    "В кармане вибрировал телефон. На экране горела странная надпись, и я не сразу понял, что делать.",
+    "",
+    "Коротко.",
+  ].join("\n");
+  const block = positiveVoiceFewShots(sample, 2);
+  assert.ok(block.includes("Эталонные абзацы"));
+  assert.ok(block.includes("автобус"));
+});
+
+test("chapter prompt builders include canon and beat focus", () => {
+  const input = {
+    title: "Лабиринт",
+    genre: "триллер",
+    description: "тест",
+    currentChapterTitle: "Глава 2",
+    currentChapterSummary: "Герой размечает коридор",
+    previousChapter: "Конец первой главы. Шаг в темноту.",
+    worldBible: "Правило левой руки",
+    bookPlan: "Глава 2 — метки",
+    canonDossier: "Заряд 3%",
+    customPrompt: "Без магии",
+    model: "gemini-2.5-flash",
+  };
+  const plan = buildBeatPlanPrompt(input);
+  assert.ok(plan.includes("Глава 2"));
+  assert.ok(plan.includes("Заряд 3%"));
+  const scene = buildScenePrompt(
+    input,
+    { title: "Метка", goal: "Вырезать I", hook: "ключ", endsWith: "синий свет" },
+    0,
+    4,
+    "Хвост.",
+    "стиль",
+    "не повторяй 3%",
+  );
+  assert.ok(scene.includes("бит 1 из 4"));
+  assert.ok(scene.includes("ключ"));
+  assert.ok(scene.includes("не повторяй 3%"));
+  assert.ok(scene.includes("Продвинь сюжет"));
+  const notes = buildAntiRepeatNotes(["Шаг. Заряд 3%. Я шёл вдоль стены."]);
+  assert.ok(notes.includes("3%"));
+  const full = buildSingleChapterPrompt(input, "few-shot");
+  assert.ok(full.includes("few-shot"));
+  assert.ok(full.includes("Правило левой руки"));
 });

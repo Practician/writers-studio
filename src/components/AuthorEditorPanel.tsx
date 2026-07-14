@@ -41,6 +41,8 @@ interface AuthorEditorPanelProps {
   currentDraft: string;
   selection: TextSelection | null;
   selectedModel?: string;
+  llmProvider?: "auto" | "gemini" | "nvidia" | "groq" | "openrouter";
+  llmApiFields?: Record<string, unknown>;
   onApply: (text: string, target: AuthorEditTarget) => boolean;
 }
 
@@ -106,6 +108,8 @@ export default function AuthorEditorPanel({
   currentDraft,
   selection,
   selectedModel,
+  llmProvider = "auto",
+  llmApiFields,
   onApply,
 }: AuthorEditorPanelProps) {
   const [sample, setSample] = useState("");
@@ -266,7 +270,7 @@ export default function AuthorEditorPanel({
       const response = await fetch("/api/writer/author", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "profile", sample, styleDescription, model: selectedModel }),
+        body: JSON.stringify({ action: "profile", sample, styleDescription, ...(llmApiFields || { model: selectedModel, llmProvider }) }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Не удалось построить профиль");
@@ -349,7 +353,7 @@ export default function AuthorEditorPanel({
             previousChapter: previousChapter?.content.slice(-12_000) || "",
             nextChapterSummary: nextChapter?.summary || "",
           },
-          model: selectedModel,
+          ...(llmApiFields || { model: selectedModel, llmProvider }),
         }),
       });
       const data = await response.json();
@@ -535,6 +539,58 @@ export default function AuthorEditorPanel({
             </select>
             {!reportMatchesChapter && (
               <p className="text-[10px] text-amber-400">Отчёт не совпадает побуквенно с текущей главой. Сегмент можно проверить, но применение заблокировано.</p>
+            )}
+            {reportMatchesChapter && (detectorReport.stats.AI_count + detectorReport.stats.LIKELY_AI_count) > 0 && (
+              <button
+                type="button"
+                disabled={loading || sample.trim().length < 300}
+                onClick={async () => {
+                  if (!activeChapter || !detectorReport) return;
+                  setLoading(true);
+                  setError("");
+                  setResult("");
+                  setAudit(null);
+                  try {
+                    const response = await fetch("/api/writer/ai", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        action: "rewrite_detector_segments",
+                        detectorSegments: detectorReport.segments.map((segment) => ({
+                          text: segment.text,
+                          label: segment.label,
+                        })),
+                        authorSample: sample,
+                        voiceSheet,
+                        humanizeDepth: "balanced",
+                        ...(llmApiFields || { model: selectedModel, llmProvider }),
+                      }),
+                    });
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error || "Не удалось переписать AI-сегменты");
+                    setResult(data.result);
+                    setModelUsed(data.model || selectedModel || "detector-ai-only");
+                    setAudit({
+                      passed: true,
+                      summary: `Переписано AI-сегментов: ${data.rewrittenCount ?? data.humanizeReport?.detectorSegmentsRewritten ?? "—"}. HUMAN-сегменты не трогались. Локальный AI-tell: ${data.humanizeReport?.scoreBefore} → ${data.humanizeReport?.scoreAfter}.`,
+                      factIssues: [],
+                      protectedTermIssues: [],
+                      voiceNotes: data.humanizeReport?.flaggedLabels || [],
+                      naturalnessNotes: data.humanizeReport?.gatePassed
+                        ? ["Gate очеловечивания пройден"]
+                        : ["Gate не пройден — просмотрите вручную"],
+                    });
+                    setScope("chapter");
+                  } catch (rewriteError: any) {
+                    setError(rewriteError.message || "Ошибка правки AI-сегментов");
+                  } finally {
+                    setLoading(false);
+                  }
+                }}
+                className="w-full rounded border border-emerald-800/60 bg-emerald-950/30 py-1.5 text-[10px] font-semibold text-emerald-300 disabled:opacity-40"
+              >
+                Очеловечить только AI-сегменты
+              </button>
             )}
           </div>
         )}

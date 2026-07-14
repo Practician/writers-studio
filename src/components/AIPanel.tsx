@@ -4,7 +4,8 @@ import ReactMarkdown from "react-markdown";
 import { Story, Chapter, TextSelection, AuthorEditTarget, AuthorProfileRecord, HumanizeReport } from "../types";
 import AuthorEditorPanel from "./AuthorEditorPanel";
 import { loadAuthorProfile } from "../lib/authorStorage";
-import { VOICE_PRESETS } from "../../server/humanStyle";
+import { canonDossier, findPreviousCanonChapter } from "../lib/chapterContext";
+import { HUMANIZE_DEPTHS, VOICE_PRESETS, type HumanizeDepth } from "../../server/humanStyle";
 
 interface AIPanelProps {
   story: Story;
@@ -16,10 +17,14 @@ interface AIPanelProps {
   activeChapter?: Chapter;
   onUpdateStoryChapters?: (chapters: Chapter[]) => void;
   selectedModel?: string;
+  /** gemini | nvidia | groq | openrouter | auto — выбор в шапке */
+  llmProvider?: "auto" | "gemini" | "nvidia" | "groq" | "openrouter";
+  /** model + llmProvider + apiKeys из шапки */
+  llmApiFields?: Record<string, unknown>;
   openAuthorRequest?: number;
 }
 
-export default function AIPanel({ story, currentDraft, selectedText, textSelection, onInsertText, onApplyAuthorEdit, activeChapter, onUpdateStoryChapters, selectedModel, openAuthorRequest }: AIPanelProps) {
+export default function AIPanel({ story, currentDraft, selectedText, textSelection, onInsertText, onApplyAuthorEdit, activeChapter, onUpdateStoryChapters, selectedModel, llmProvider = "auto", llmApiFields, openAuthorRequest }: AIPanelProps) {
   const [activeTool, setActiveTool] = useState<"continue" | "improve" | "author" | "brainstorm">("continue");
   useEffect(() => {
     if (openAuthorRequest) setActiveTool("author");
@@ -45,9 +50,12 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
 
   // Humanized Generation States
   const [humanize, setHumanize] = useState(true);
+  const [humanizeDepth, setHumanizeDepth] = useState<HumanizeDepth>("balanced");
   const [voicePreset, setVoicePreset] = useState("neutral");
   const [authorProfile, setAuthorProfile] = useState<AuthorProfileRecord | null>(null);
   const [humanizeReport, setHumanizeReport] = useState<HumanizeReport | null>(null);
+
+  const hasAuthorSample = Boolean(authorProfile?.sample && authorProfile.sample.trim().length >= 300);
 
   useEffect(() => {
     let cancelled = false;
@@ -61,9 +69,10 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
   const applyHumanizePayload = (payload: any) => {
     payload.humanize = humanize;
     if (!humanize) return;
+    payload.humanizeDepth = humanizeDepth;
     if (authorProfile?.voiceSheet) payload.voiceSheet = authorProfile.voiceSheet;
-    if (authorProfile?.sample && authorProfile.sample.trim().length >= 300) {
-      payload.authorSample = authorProfile.sample;
+    if (hasAuthorSample) {
+      payload.authorSample = authorProfile!.sample;
     }
     if (!authorProfile?.voiceSheet) payload.voicePreset = voicePreset;
   };
@@ -81,11 +90,7 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
   // Detect Materials for Chapter Generation
   const getPrevChapter = () => {
     if (!activeChapter || !story.chapters) return null;
-    const currentIndex = story.chapters.findIndex(ch => ch.id === activeChapter.id);
-    if (currentIndex > 0) {
-      return story.chapters[currentIndex - 1];
-    }
-    return null;
+    return findPreviousCanonChapter(story.chapters, activeChapter);
   };
 
   const getBibleSummary = () => {
@@ -118,6 +123,10 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
       alert("Пожалуйста, выберите хотя бы одну главу для генерации!");
       return;
     }
+    if (humanize && humanizeDepth === "maximum" && !hasAuthorSample) {
+      alert("Режим «Максимум» требует образец голоса. Загрузите текст во вкладке «Автор» или выберите «Баланс» / «Быстро».");
+      return;
+    }
 
     setLoading(true);
     setError(null);
@@ -138,8 +147,7 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
           status: `Генерируем «${ch.title}»...`
         });
 
-        const currentIndex = currentChapters.findIndex(c => c.id === chapterId);
-        const prevCh = currentIndex > 0 ? currentChapters[currentIndex - 1] : null;
+        const prevCh = findPreviousCanonChapter(currentChapters, ch);
         const prevChapterContent = prevCh ? `Глава: ${prevCh.title}\n\n${prevCh.content}` : "";
 
         const worldBibleText = story.worldBible || story.worldRules?.map(r => `[${r.title}]: ${r.content}`).join("\n\n") || story.description;
@@ -155,8 +163,9 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
           previousChapter: prevChapterContent,
           worldBible: worldBibleText,
           bookPlan: bookPlanText,
+          canonDossier: canonDossier(story, ch, prevCh),
           customPrompt: continuePrompt,
-          model: selectedModel,
+          ...(llmApiFields || { model: selectedModel, llmProvider }),
         };
         applyHumanizePayload(batchPayload);
 
@@ -193,12 +202,23 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
   };
 
   const handleAction = async () => {
+    if (
+      humanize
+      && humanizeDepth === "maximum"
+      && !hasAuthorSample
+      && activeTool === "continue"
+      && continueMode === "whole_chapter"
+    ) {
+      setError("Режим «Максимум» требует образец голоса (≥300 знаков) во вкладке «Автор». Либо выберите «Баланс» или «Быстро».");
+      return;
+    }
+
     setLoading(true);
     setError(null);
     setResult("");
     setHumanizeReport(null);
 
-    let payload: any = { action: activeTool, model: selectedModel };
+    let payload: any = { action: activeTool, ...(llmApiFields || { model: selectedModel, llmProvider }) };
     if (activeTool === "continue" || activeTool === "improve") {
       applyHumanizePayload(payload);
     }
@@ -227,6 +247,7 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
         payload.previousChapter = prevChapterContent;
         payload.worldBible = worldBibleText;
         payload.bookPlan = bookPlanText;
+        if (activeChapter) payload.canonDossier = canonDossier(story, activeChapter, prevCh);
         payload.customPrompt = continuePrompt;
       } else {
         payload.text = currentDraft;
@@ -657,6 +678,8 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
             currentDraft={currentDraft}
             selection={textSelection}
             selectedModel={selectedModel}
+            llmProvider={llmProvider}
+            llmApiFields={llmApiFields}
             onApply={onApplyAuthorEdit}
           />
         )}
@@ -690,30 +713,57 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
                 className="accent-emerald-500 cursor-pointer"
               />
               <span className="text-xs font-semibold text-slate-200">Очеловечивание текста</span>
-              <span className="text-[10px] text-slate-500">живой ритм, без штампов</span>
+              <span className="text-[10px] text-slate-500">сцены, штампы, голос</span>
             </label>
             {humanize && (
-              authorProfile?.voiceSheet ? (
-                <p className="text-[10px] text-emerald-400 flex items-center gap-1">
-                  <CheckCircle2 className="w-3 h-3" />
-                  Пишем голосом автора — по образцу из инструмента «Автор»
-                </p>
-              ) : (
-                <div className="space-y-1">
-                  <select
-                    value={voicePreset}
-                    onChange={(e) => setVoicePreset(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-slate-200 cursor-pointer"
-                  >
-                    {VOICE_PRESETS.map((preset) => (
-                      <option key={preset.id} value={preset.id}>{preset.title}</option>
-                    ))}
-                  </select>
-                  <p className="text-[10px] text-slate-500">
-                    Загрузите образец текста во вкладке «Автор», чтобы ИИ писал вашим собственным голосом.
-                  </p>
+              <>
+                <div className="grid grid-cols-3 gap-1">
+                  {(Object.keys(HUMANIZE_DEPTHS) as HumanizeDepth[]).map((depthId) => {
+                    const depth = HUMANIZE_DEPTHS[depthId];
+                    const locked = depthId === "maximum" && !hasAuthorSample;
+                    return (
+                      <button
+                        key={depthId}
+                        type="button"
+                        disabled={locked}
+                        title={locked ? "Нужен образец голоса во вкладке «Автор»" : depth.description}
+                        onClick={() => setHumanizeDepth(depthId)}
+                        className={`rounded border px-1.5 py-1.5 text-[10px] leading-tight transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                          humanizeDepth === depthId
+                            ? "border-emerald-600 bg-emerald-950/40 text-emerald-300"
+                            : "border-slate-800 text-slate-500 hover:text-slate-300"
+                        }`}
+                      >
+                        <span className="font-semibold block">{depth.title}</span>
+                        <span className="text-[9px] opacity-80">{depth.description}</span>
+                      </button>
+                    );
+                  })}
                 </div>
-              )
+                {authorProfile?.voiceSheet || hasAuthorSample ? (
+                  <p className="text-[10px] text-emerald-400 flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3" />
+                    {authorProfile?.voiceSheet
+                      ? "Пишем голосом автора — по образцу из инструмента «Автор»"
+                      : "Образец текста загружен — манера будет подтянута"}
+                  </p>
+                ) : (
+                  <div className="space-y-1">
+                    <select
+                      value={voicePreset}
+                      onChange={(e) => setVoicePreset(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-slate-200 cursor-pointer"
+                    >
+                      {VOICE_PRESETS.map((preset) => (
+                        <option key={preset.id} value={preset.id}>{preset.title}</option>
+                      ))}
+                    </select>
+                    <p className="text-[10px] text-amber-400/90">
+                      Без образца «Максимум» недоступен. Загрузите главу 1 во вкладке «Автор».
+                    </p>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
@@ -798,11 +848,31 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
               <div className="px-3 py-2 border-t border-slate-800 bg-slate-950/40">
                 <div className="flex items-center justify-between text-[10px] text-slate-400 mb-1">
                   <span title={humanizeReport.flaggedLabels.length ? `Найденные штампы: ${humanizeReport.flaggedLabels.join(", ")}` : "Штампы не обнаружены"}>
-                    Естественность текста: <span className="font-bold text-slate-200">{Math.max(100 - humanizeReport.scoreAfter, 0)}/100</span>
+                    Естественность: <span className="font-bold text-slate-200">{Math.max(100 - humanizeReport.scoreAfter, 0)}/100</span>
+                    {typeof humanizeReport.scoreBefore === "number" && humanizeReport.scoreBefore !== humanizeReport.scoreAfter && (
+                      <span className="text-slate-500"> (было {Math.max(100 - humanizeReport.scoreBefore, 0)})</span>
+                    )}
                   </span>
-                  {humanizeReport.refinedBlocks > 0 && (
-                    <span className="text-emerald-400">само-редактура: {humanizeReport.refinedBlocks} абз.</span>
-                  )}
+                  <span className="text-slate-500">
+                    {humanizeReport.mode === "scenes" && humanizeReport.scenesGenerated
+                      ? `сцены: ${humanizeReport.scenesGenerated}`
+                      : null}
+                    {humanizeReport.refinedBlocks > 0 && (
+                      <span className="text-emerald-400 ml-2">правка: {humanizeReport.refinedBlocks} абз.</span>
+                    )}
+                    {humanizeReport.candidatesTried != null && humanizeReport.candidatesTried > 1 && (
+                      <span className="text-sky-400 ml-2">
+                        best-of-{humanizeReport.candidatesTried}
+                        {humanizeReport.chosenCandidate != null ? ` #${humanizeReport.chosenCandidate + 1}` : ""}
+                      </span>
+                    )}
+                    {humanizeReport.detectorSegmentsRewritten != null && humanizeReport.detectorSegmentsRewritten > 0 && (
+                      <span className="text-violet-400 ml-2">AI-сегм: {humanizeReport.detectorSegmentsRewritten}</span>
+                    )}
+                    {humanizeReport.gatePassed && (
+                      <span className="text-emerald-400 ml-2">gate ✓</span>
+                    )}
+                  </span>
                 </div>
                 <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
                   <div
@@ -810,6 +880,13 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
                     style={{ width: `${Math.max(100 - humanizeReport.scoreAfter, 0)}%` }}
                   />
                 </div>
+                {(humanizeReport.depth || humanizeReport.burstiness != null) && (
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    {humanizeReport.depth ? `режим: ${humanizeReport.depth}` : ""}
+                    {humanizeReport.burstiness != null ? ` · ритм ${humanizeReport.burstiness.toFixed(2)}` : ""}
+                    {humanizeReport.passesRun ? ` · проходов: ${humanizeReport.passesRun}` : ""}
+                  </p>
+                )}
                 {(humanizeReport.unresolvedLabels?.length ?? 0) > 0 && (
                   <p className="text-[10px] text-amber-400 mt-1">
                     Не удалось убрать: {humanizeReport.unresolvedLabels!.join(", ")} — просмотрите вручную.

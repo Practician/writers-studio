@@ -6,9 +6,11 @@ interface WorldBuilderProps {
   story: Story;
   onUpdateWorldRules: (rules: WorldRule[]) => void;
   selectedModel?: string;
+  llmProvider?: "auto" | "gemini" | "nvidia" | "groq" | "openrouter";
+  llmApiFields?: Record<string, unknown>;
 }
 
-export default function WorldBuilder({ story, onUpdateWorldRules, selectedModel }: WorldBuilderProps) {
+export default function WorldBuilder({ story, onUpdateWorldRules, selectedModel, llmProvider = "auto", llmApiFields }: WorldBuilderProps) {
   const [selectedRule, setSelectedRule] = useState<WorldRule | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -93,7 +95,7 @@ export default function WorldBuilder({ story, onUpdateWorldRules, selectedModel 
           action: "brainstorm",
           category: "Мироустройство (World Lore & Mechanics)",
           topic: promptText,
-          model: selectedModel
+          ...(llmApiFields || { model: selectedModel, llmProvider }),
         }),
       });
 

@@ -1,6 +1,9 @@
 import { Story } from "./types";
+import { buildLabyrinthStory } from "./data/labyrinthCanon";
 
+/** Демо-шаблон + канон «Лабиринт» (библия/план/гл.5–6) — см. mergeLabyrinthCanonIntoStories. */
 export const DEFAULT_STORIES: Story[] = [
+  buildLabyrinthStory(),
   {
     id: "story-1",
     title: "Шёпот Древних Звёзд",

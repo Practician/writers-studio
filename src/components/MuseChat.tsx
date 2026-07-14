@@ -8,9 +8,11 @@ interface MuseChatProps {
   story: Story;
   currentDraft: string;
   selectedModel?: string;
+  llmProvider?: "auto" | "gemini" | "nvidia" | "groq" | "openrouter";
+  llmApiFields?: Record<string, unknown>;
 }
 
-export default function MuseChat({ story, currentDraft, selectedModel }: MuseChatProps) {
+export default function MuseChat({ story, currentDraft, selectedModel, llmProvider = "auto", llmApiFields }: MuseChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -134,7 +136,7 @@ export default function MuseChat({ story, currentDraft, selectedModel }: MuseCha
           description: story.description,
           worldBible: worldBibleText,
           bookPlan: bookPlanText,
-          model: selectedModel
+          ...(llmApiFields || { model: selectedModel, llmProvider }),
         }),
       });
       
@@ -253,7 +255,7 @@ export default function MuseChat({ story, currentDraft, selectedModel }: MuseCha
           currentDraft: currentDraft,
           history: updatedMessages.slice(-8), // Send last 8 messages for context
           customPrompt: messageText,
-          model: selectedModel
+          ...(llmApiFields || { model: selectedModel, llmProvider }),
         }),
       });
 
