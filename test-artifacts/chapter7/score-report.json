@@ -1,15 +1,4 @@
 {
-  "words": 2161,
-  "yaPer100": 13.4,
-  "local": {
-    "score": 8,
-    "burstiness": 0.6
-  },
-  "yandex": {
-    "aiPct": 74.7,
-    "HUMAN": 3,
-    "AI": 9,
-    "LAI": 0
-  },
-  "note": "soft +я on 74.3 base; hard telegraph pass rejected (83%)"
+  "words": 1267,
+  "note": "compressed ~1200 diary style"
 }
