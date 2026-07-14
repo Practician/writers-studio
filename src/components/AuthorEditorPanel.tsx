@@ -26,6 +26,15 @@ import {
 } from "../types";
 import { auditStyleSignals, compareStyle, hashText } from "../lib/authorAudit";
 import { DetectorReport, isAiSegment, readDetectorReport } from "../lib/detectorReport";
+import {
+  AdaptiveDetectorProfile,
+  buildAdaptiveWritingGuidance,
+  learnFromDetectorReport,
+  loadAdaptiveProfile,
+  resetAdaptiveProfile,
+  saveAdaptiveProfile,
+  scoreWithAdaptiveProfile,
+} from "../lib/adaptiveDetector";
 import { diffParagraphs } from "../lib/textDiff";
 import {
   listAuthorRevisions,
@@ -124,6 +133,8 @@ export default function AuthorEditorPanel({
   const [instructions, setInstructions] = useState("");
   const [detectorReport, setDetectorReport] = useState<DetectorReport | null>(null);
   const [detectorSegmentIndex, setDetectorSegmentIndex] = useState<number | null>(null);
+  const [adaptiveProfile, setAdaptiveProfile] = useState<AdaptiveDetectorProfile>(() => loadAdaptiveProfile(story.id));
+  const [adaptiveStatus, setAdaptiveStatus] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState("");
@@ -153,6 +164,11 @@ export default function AuthorEditorPanel({
         if (!cancelled) setProfileStatus("Локальный профиль пока недоступен");
       });
     return () => { cancelled = true; };
+  }, [story.id]);
+
+  useEffect(() => {
+    setAdaptiveProfile(loadAdaptiveProfile(story.id));
+    setAdaptiveStatus("");
   }, [story.id]);
 
   useEffect(() => {
@@ -210,15 +226,28 @@ export default function AuthorEditorPanel({
     () => sample.trim().length >= 300 && sourceText.trim() ? compareStyle(sample, sourceText) : null,
     [sample, sourceText],
   );
+  const adaptiveScore = useMemo(
+    () => scoreWithAdaptiveProfile(sourceText, adaptiveProfile),
+    [adaptiveProfile, sourceText],
+  );
 
-  const persistProfile = async (nextVoiceSheet = voiceSheet) => {
+  const persistProfile = async (
+    options?: {
+      voiceSheet?: AuthorVoiceSheet;
+      clearVoiceSheet?: boolean;
+      sample?: string;
+      sampleFileName?: string;
+      styleDescription?: string;
+      protectedTerms?: string[];
+    },
+  ) => {
     const profile: AuthorProfileRecord = {
       storyId: story.id,
-      sample,
-      sampleFileName,
-      styleDescription,
-      protectedTerms: parseTerms(protectedTermsText),
-      voiceSheet: nextVoiceSheet,
+      sample: options?.sample ?? sample,
+      sampleFileName: options?.sampleFileName ?? sampleFileName,
+      styleDescription: options?.styleDescription ?? styleDescription,
+      protectedTerms: options?.protectedTerms ?? parseTerms(protectedTermsText),
+      voiceSheet: options?.clearVoiceSheet ? undefined : (options?.voiceSheet ?? voiceSheet),
       updatedAt: Date.now(),
     };
     await saveAuthorProfile(profile);
@@ -238,11 +267,23 @@ export default function AuthorEditorPanel({
       } else {
         throw new Error("Поддерживаются файлы TXT и DOCX");
       }
-      if (!text.trim()) throw new Error("В файле не найден текст");
-      setSample(text.trim());
+      const trimmed = text.trim();
+      if (!trimmed) throw new Error("В файле не найден текст");
+      setSample(trimmed);
       setSampleFileName(file.name);
       setVoiceSheet(undefined);
-      setProfileStatus(`Загружен образец «${file.name}». Постройте паспорт заново.`);
+      // Сразу в IndexedDB — иначе «Максимум» и другие вкладки не видят образец
+      await persistProfile({
+        sample: trimmed,
+        sampleFileName: file.name,
+        clearVoiceSheet: true,
+      });
+      const chars = trimmed.length;
+      setProfileStatus(
+        chars >= 300
+          ? `Образец «${file.name}» сохранён (${chars.toLocaleString("ru-RU")} знаков). Можно строить паспорт или сразу писать в режиме «Максимум».`
+          : `Файл «${file.name}» загружен, но мало текста (${chars} из 300). Добавьте ещё или загрузите другую главу.`,
+      );
     } catch (fileError: any) {
       setProfileStatus(fileError.message || "Не удалось прочитать файл");
     }
@@ -257,6 +298,18 @@ export default function AuthorEditorPanel({
     setProtectedTermsText("");
     setVoiceSheet(undefined);
     setProfileStatus("Образец и паспорт голоса удалены");
+  };
+
+  const clearSampleOnly = async () => {
+    setSample("");
+    setSampleFileName("");
+    setVoiceSheet(undefined);
+    try {
+      await persistProfile({ sample: "", sampleFileName: "", clearVoiceSheet: true });
+      setProfileStatus("Образец очищен (сохранён пустой)");
+    } catch {
+      setProfileStatus("Не удалось очистить сохранённый образец");
+    }
   };
 
   const buildProfile = async () => {
@@ -275,7 +328,7 @@ export default function AuthorEditorPanel({
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Не удалось построить профиль");
       setVoiceSheet(data.profile);
-      await persistProfile(data.profile);
+      await persistProfile({ voiceSheet: data.profile, sample, sampleFileName });
       setProfileStatus("Паспорт голоса сохранён для этой книги");
     } catch (profileError: any) {
       setProfileStatus(profileError.message || "Не удалось построить профиль");
@@ -302,6 +355,21 @@ export default function AuthorEditorPanel({
       const firstAi = report.segments.findIndex(isAiSegment);
       setDetectorSegmentIndex(firstAi >= 0 ? firstAi : 0);
       setScope("detector");
+      if (report.fullText === currentDraft) {
+        const learning = learnFromDetectorReport(adaptiveProfile, report);
+        if (learning.duplicate) {
+          setAdaptiveStatus("Этот отчёт уже учтён — повторно профиль не изменён.");
+        } else {
+          saveAdaptiveProfile(learning.profile);
+          setAdaptiveProfile(learning.profile);
+          setAdaptiveStatus(
+            `Самообучение: добавлено HUMAN ${learning.learnedHuman}, AI ${learning.learnedAi}`
+            + (learning.ignored ? `, пропущено коротких/неизвестных ${learning.ignored}` : ""),
+          );
+        }
+      } else {
+        setAdaptiveStatus("Самообучение пропущено: отчёт не совпадает с текущим текстом главы.");
+      }
     } catch (reportError: any) {
       setDetectorReport(null);
       setDetectorSegmentIndex(null);
@@ -342,6 +410,7 @@ export default function AuthorEditorPanel({
           protectedTerms: parseTerms(protectedTermsText),
           strength,
           instructions,
+          adaptiveStyleGuidance: buildAdaptiveWritingGuidance(adaptiveProfile),
           context: {
             title: story.title,
             genre: story.genre,
@@ -362,7 +431,7 @@ export default function AuthorEditorPanel({
       setAudit(data.audit);
       setVoiceSheet(data.voiceSheet);
       setModelUsed(data.model || selectedModel || "");
-      await persistProfile(data.voiceSheet);
+      await persistProfile({ voiceSheet: data.voiceSheet, sample, sampleFileName });
 
       const revisionTarget = target || {
         chapterId: activeChapter.id,
@@ -430,6 +499,17 @@ export default function AuthorEditorPanel({
           id="author-profile-sample"
           value={sample}
           onChange={(event) => setSample(event.target.value)}
+          onBlur={() => {
+            if (sample.trim().length > 0) {
+              void persistProfile().then(() => {
+                setProfileStatus(
+                  sample.trim().length >= 300
+                    ? `Образец сохранён (${sample.trim().length.toLocaleString("ru-RU")} знаков) для этой книги`
+                    : `Текст сохранён, но для «Максимум» нужно ≥300 знаков (сейчас ${sample.trim().length})`,
+                );
+              }).catch(() => setProfileStatus("Не удалось сохранить образец"));
+            }
+          }}
           rows={5}
           placeholder="Вставьте главу, написанную автором без ИИ. Образец используется только как манера, не как источник событий."
           className="w-full rounded-lg border border-slate-800 bg-slate-950 p-2.5 text-xs text-slate-200 outline-none focus:border-emerald-700"
@@ -450,10 +530,16 @@ export default function AuthorEditorPanel({
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
-        {sampleFileName && (
+        {sample.trim().length > 0 && (
           <div className="flex items-center justify-between rounded-lg bg-slate-950/60 px-2 py-1.5 text-[10px] text-slate-400">
-            <span className="truncate">Файл: {sampleFileName}</span>
-            <button onClick={() => { setSample(""); setSampleFileName(""); setVoiceSheet(undefined); }} className="ml-2 text-red-400" title="Удалить загруженный текст"><Trash2 className="w-3 h-3" /></button>
+            <span className="truncate">
+              {sampleFileName ? `Файл: ${sampleFileName} · ` : ""}
+              {sample.trim().length.toLocaleString("ru-RU")} знаков
+              {sample.trim().length >= 300 ? " · сохранён для «Максимум»" : " · мало для «Максимум»"}
+            </span>
+            <button onClick={() => { void clearSampleOnly(); }} className="ml-2 text-red-400" title="Удалить загруженный текст">
+              <Trash2 className="w-3 h-3" />
+            </button>
           </div>
         )}
         <input
@@ -563,6 +649,7 @@ export default function AuthorEditorPanel({
                         authorSample: sample,
                         voiceSheet,
                         humanizeDepth: "balanced",
+                        adaptiveStyleGuidance: buildAdaptiveWritingGuidance(adaptiveProfile),
                         ...(llmApiFields || { model: selectedModel, llmProvider }),
                       }),
                     });
@@ -594,13 +681,50 @@ export default function AuthorEditorPanel({
             )}
           </div>
         )}
+        <div className="rounded-lg border border-violet-900/50 bg-violet-950/20 p-2 text-[10px] text-violet-200 space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-semibold">Самообучение детектора</span>
+            {(adaptiveProfile.human.count + adaptiveProfile.ai.count) > 0 && (
+              <button
+                type="button"
+                className="text-violet-300 hover:text-red-300"
+                onClick={() => {
+                  if (!window.confirm("Сбросить весь накопленный профиль детектора для этой книги?")) return;
+                  setAdaptiveProfile(resetAdaptiveProfile(story.id));
+                  setAdaptiveStatus("Накопленный профиль сброшен.");
+                }}
+              >
+                Сбросить
+              </button>
+            )}
+          </div>
+          <p className="text-violet-300/75">
+            Опыт: HUMAN {adaptiveProfile.human.count} · AI {adaptiveProfile.ai.count}. Учится только на совпавших отчётах.
+          </p>
+          {adaptiveStatus && <p>{adaptiveStatus}</p>}
+        </div>
       </div>
 
       <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-2.5 space-y-2">
         <div className="flex items-center justify-between">
           <span className="flex items-center gap-1 text-[10px] font-semibold uppercase text-slate-400"><FileSearch className="w-3.5 h-3.5" /> Локальные сигналы</span>
-          {styleComparison && <span className="text-[10px] text-blue-300">ритм: {styleComparison.similarity}/100</span>}
+          {styleComparison && (
+            <span
+              className="text-[10px] text-blue-300"
+              title={`Слабые метрики: ${styleComparison.weakestMetrics.join(", ")}`}
+            >
+              эталон HUMAN: {styleComparison.similarity}/100
+            </span>
+          )}
         </div>
+        {adaptiveScore && (
+          <div className="flex items-center justify-between gap-2 rounded border border-violet-900/50 bg-violet-950/20 px-2 py-1.5 text-[10px]">
+            <span className="text-violet-200">адаптивно: {adaptiveScore.humanProbability}% HUMAN</span>
+            <span className="text-violet-400" title="Уверенность растёт с числом размеченных сегментов">
+              уверенность {adaptiveScore.confidence}%
+            </span>
+          </div>
+        )}
         {localSignals.length ? localSignals.map((signal) => (
           <div key={signal.category} className="flex items-start justify-between gap-2 text-[10px] text-slate-400">
             <span>{signal.category}: {signal.message}</span><strong>{signal.count}</strong>

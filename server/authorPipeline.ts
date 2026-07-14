@@ -33,6 +33,7 @@ export interface AuthorRewriteRequest {
   protectedTerms: string[];
   strength: "conservative" | "balanced" | "deep";
   instructions: string;
+  adaptiveStyleGuidance: string;
   context: AuthorRewriteContext;
   model?: string;
 }
@@ -109,6 +110,7 @@ export function validateRewriteRequest(value: unknown): AuthorRewriteRequest {
     protectedTerms: normalizeProtectedTerms(body.protectedTerms),
     strength,
     instructions: optionalString(body.instructions, "instructions", 5_000),
+    adaptiveStyleGuidance: optionalString(body.adaptiveStyleGuidance, "adaptiveStyleGuidance", 4_000),
     context: contextValue(body.context),
     model: typeof body.model === "string" ? body.model : undefined,
   };
@@ -299,7 +301,7 @@ export function buildRewritePrompt(
   }[request.strength];
   const excerpts = selectStyleExcerpts(request.authorSample, request.sourceText);
   const voiceStats = quantitativeVoiceBlock(request.authorSample);
-  return `${DATA_WARNING}\n\n${voiceStats ? `${voiceStats}\n\n` : ""}<DATA role="voice-sheet">\n${JSON.stringify(voiceSheet)}\n</DATA>\n\n` +
+  return `${DATA_WARNING}\n\n${voiceStats ? `${voiceStats}\n\n` : ""}${request.adaptiveStyleGuidance ? `${request.adaptiveStyleGuidance}\n\n` : ""}<DATA role="voice-sheet">\n${JSON.stringify(voiceSheet)}\n</DATA>\n\n` +
     `<DATA role="style-excerpts">\n${excerpts}\n</DATA>\n\n` +
     `<DATA role="facts-and-canon">\n${JSON.stringify(analysis)}\n</DATA>\n\n` +
     `<DATA role="source-blocks">\n${JSON.stringify(structure.blocks)}\n</DATA>\n\n` +
@@ -321,7 +323,7 @@ export function buildTargetedRewritePrompt(
     matchedFormulas: priorityStyleMatches(blocks[index]),
     text: blocks[index],
   }));
-  return `${DATA_WARNING}\n\n<DATA role="voice-sheet">\n${JSON.stringify(voiceSheet)}\n</DATA>\n\n` +
+  return `${DATA_WARNING}\n\n${request.adaptiveStyleGuidance ? `${request.adaptiveStyleGuidance}\n\n` : ""}<DATA role="voice-sheet">\n${JSON.stringify(voiceSheet)}\n</DATA>\n\n` +
     `<DATA role="facts-and-canon">\n${JSON.stringify(analysis)}\n</DATA>\n\n` +
     `<DATA role="priority-blocks">\n${JSON.stringify(targets)}\n</DATA>\n\n` +
     `<DATA role="author-instructions">\n${request.instructions}\n</DATA>\n\n` +

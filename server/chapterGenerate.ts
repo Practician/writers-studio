@@ -47,6 +47,7 @@ export interface ChapterGenerateInput {
   voiceSheet?: unknown;
   voicePreset?: string;
   humanizeDepth?: HumanizeDepth | string;
+  adaptiveStyleGuidance?: string;
   model: string;
   /** Переопределить best-of-N черновиков (по умолчанию из depth). */
   chapterCandidates?: number;
@@ -166,7 +167,12 @@ export function buildPersonaAndStyle(
     ? `ОБРАЗЕЦ АВТОРСКОЙ МАНЕРЫ (только ритм, лексика и интонация; события и персонажей из образца не переносить):\n"""\n${excerpts}\n"""`
     : "";
   const fewShots = sample.length >= 300 ? positiveVoiceFewShots(sample, 3) : "";
-  const statsBlock = sample.length >= 300 ? quantitativeVoiceBlock(sample) : "";
+  const learnedBlock = typeof input.adaptiveStyleGuidance === "string"
+    ? input.adaptiveStyleGuidance.slice(0, 4_000).trim()
+    : "";
+  const statsBlock = [sample.length >= 300 ? quantitativeVoiceBlock(sample) : "", learnedBlock]
+    .filter(Boolean)
+    .join("\n\n");
   return { personaBlock, styleBlock, fewShots, statsBlock };
 }
 
@@ -656,7 +662,7 @@ export async function generateHumanizedChapter(
   const sample = typeof input.authorSample === "string" ? input.authorSample.trim() : "";
   if (depth.minAuthorSampleChars > 0 && sample.length < depth.minAuthorSampleChars) {
     throw new Error(
-      `Режим «${depth.title}» требует образец авторского голоса (≥${depth.minAuthorSampleChars} знаков). Загрузите главу-образец во вкладке «Автор» или выберите режим «Баланс» / «Быстро».`,
+      `Режим «${depth.title}» требует образец стиля (≥${depth.minAuthorSampleChars} знаков). Загрузите TXT/Word во вкладке «Автор», либо напишите хотя бы одну главу в книге, либо выберите «Баланс» / «Быстро».`,
     );
   }
 

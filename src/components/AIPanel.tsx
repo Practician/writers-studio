@@ -1,11 +1,12 @@
-import React, { useEffect, useState } from "react";
-import { Sparkles, Wand2, ArrowRight, Copy, Check, ChevronRight, HelpCircle, FileText, CheckCircle2, AlertCircle } from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import { Sparkles, Wand2, ArrowRight, Copy, Check, ChevronRight, HelpCircle, FileText, CheckCircle2, AlertCircle, Square } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { Story, Chapter, TextSelection, AuthorEditTarget, AuthorProfileRecord, HumanizeReport } from "../types";
 import AuthorEditorPanel from "./AuthorEditorPanel";
-import { loadAuthorProfile } from "../lib/authorStorage";
+import { loadAuthorProfile, onAuthorProfileUpdated } from "../lib/authorStorage";
 import { canonDossier, findPreviousCanonChapter } from "../lib/chapterContext";
 import { HUMANIZE_DEPTHS, VOICE_PRESETS, type HumanizeDepth } from "../../server/humanStyle";
+import { buildAdaptiveWritingGuidance, loadAdaptiveProfile } from "../lib/adaptiveDetector";
 
 interface AIPanelProps {
   story: Story;
@@ -33,6 +34,22 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
   const [result, setResult] = useState("");
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Отмена текущей генерации (Продолжить сюжет / пакет глав / улучшение / идеи). */
+  const abortRef = useRef<AbortController | null>(null);
+
+  const handleStopGeneration = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoading(false);
+    setBatchProgress(null);
+    setError("Генерация остановлена.");
+  };
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   // Continuation States
   const [continueMode, setContinueMode] = useState<"paragraphs" | "whole_chapter" | "multi_chapters">("paragraphs");
@@ -55,7 +72,46 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
   const [authorProfile, setAuthorProfile] = useState<AuthorProfileRecord | null>(null);
   const [humanizeReport, setHumanizeReport] = useState<HumanizeReport | null>(null);
 
-  const hasAuthorSample = Boolean(authorProfile?.sample && authorProfile.sample.trim().length >= 300);
+  /** Явный образец из вкладки «Автор» (≥300 знаков). */
+  const profileSample = (authorProfile?.sample || "").trim();
+  const hasProfileSample = profileSample.length >= 300;
+
+  /**
+   * Fallback: уже написанные главы книги (кроме текущей) — чтобы «Максимум»
+   * работал без отдельной загрузки образца, если в проекте уже есть текст.
+   */
+  const buildFallbackAuthorSample = (excludeChapterId?: string, minChars = 300): string => {
+    const candidates = (story.chapters || [])
+      .filter((ch) => ch.id !== excludeChapterId && (ch.content || "").trim().length >= 100)
+      .map((ch) => (ch.content || "").trim())
+      .sort((a, b) => b.length - a.length);
+    if (!candidates.length) return "";
+    let sample = "";
+    for (const text of candidates) {
+      if (sample.length >= 10_000) break;
+      sample = sample ? `${sample}\n\n${text}` : text;
+    }
+    return sample.length >= minChars ? sample.slice(0, 12_000) : "";
+  };
+
+  const resolveAuthorSample = (excludeChapterId?: string): string => {
+    if (hasProfileSample) return profileSample;
+    return buildFallbackAuthorSample(excludeChapterId);
+  };
+
+  const fallbackSample = buildFallbackAuthorSample(activeChapter?.id);
+  const hasAuthorSample = hasProfileSample || fallbackSample.length >= 300;
+  const sampleSource: "profile" | "chapters" | "none" = hasProfileSample
+    ? "profile"
+    : fallbackSample.length >= 300
+      ? "chapters"
+      : "none";
+
+  const refreshAuthorProfile = () => {
+    loadAuthorProfile(story.id)
+      .then((profile) => setAuthorProfile(profile ?? null))
+      .catch(() => setAuthorProfile(null));
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -65,16 +121,24 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
     return () => { cancelled = true; };
   }, [story.id, activeTool]);
 
+  // Синхрон с вкладкой «Автор»: образец сохраняется в IndexedDB, подхватываем сразу
+  useEffect(() => {
+    return onAuthorProfileUpdated((storyId) => {
+      if (storyId === story.id) refreshAuthorProfile();
+    });
+  }, [story.id]);
+
   // Дополняет запрос генерации данными для «очеловечивания с первого прохода»
-  const applyHumanizePayload = (payload: any) => {
+  const applyHumanizePayload = (payload: any, excludeChapterId?: string) => {
     payload.humanize = humanize;
     if (!humanize) return;
     payload.humanizeDepth = humanizeDepth;
     if (authorProfile?.voiceSheet) payload.voiceSheet = authorProfile.voiceSheet;
-    if (hasAuthorSample) {
-      payload.authorSample = authorProfile!.sample;
-    }
+    const sample = resolveAuthorSample(excludeChapterId ?? activeChapter?.id);
+    if (sample) payload.authorSample = sample;
     if (!authorProfile?.voiceSheet) payload.voicePreset = voicePreset;
+    const adaptiveStyleGuidance = buildAdaptiveWritingGuidance(loadAdaptiveProfile(story.id));
+    if (adaptiveStyleGuidance) payload.adaptiveStyleGuidance = adaptiveStyleGuidance;
   };
 
   const handleCopy = () => {
@@ -123,10 +187,24 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
       alert("Пожалуйста, выберите хотя бы одну главу для генерации!");
       return;
     }
-    if (humanize && humanizeDepth === "maximum" && !hasAuthorSample) {
-      alert("Режим «Максимум» требует образец голоса. Загрузите текст во вкладке «Автор» или выберите «Баланс» / «Быстро».");
+
+    // Подтянуть свежий образец из IndexedDB (на случай загрузки во вкладке «Автор»)
+    let liveProfile = authorProfile;
+    try {
+      liveProfile = (await loadAuthorProfile(story.id)) ?? null;
+      setAuthorProfile(liveProfile);
+    } catch { /* keep current */ }
+
+    const liveSample = (liveProfile?.sample || "").trim().length >= 300
+      || buildFallbackAuthorSample().length >= 300;
+    if (humanize && humanizeDepth === "maximum" && !liveSample) {
+      alert("Режим «Максимум» нужен образец стиля (≥300 знаков): загрузите текст во вкладке «Автор» или напишите хотя бы одну главу в книге. Либо выберите «Баланс» / «Быстро».");
       return;
     }
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     setLoading(true);
     setError(null);
@@ -134,9 +212,12 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
     setBatchProgress({ current: 0, total: selectedBatchChapters.length, status: "Подготовка..." });
 
     let currentChapters = [...story.chapters];
+    let completed = 0;
 
     try {
       for (let i = 0; i < selectedBatchChapters.length; i++) {
+        if (controller.signal.aborted) break;
+
         const chapterId = selectedBatchChapters[i];
         const ch = currentChapters.find(c => c.id === chapterId);
         if (!ch) continue;
@@ -167,12 +248,13 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
           customPrompt: continuePrompt,
           ...(llmApiFields || { model: selectedModel, llmProvider }),
         };
-        applyHumanizePayload(batchPayload);
+        applyHumanizePayload(batchPayload, ch.id);
 
         const response = await fetch("/api/writer/ai", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(batchPayload)
+          body: JSON.stringify(batchPayload),
+          signal: controller.signal,
         });
 
         if (!response.ok) {
@@ -189,29 +271,60 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
         if (onUpdateStoryChapters) {
           onUpdateStoryChapters(currentChapters);
         }
+        completed += 1;
       }
 
-      setResult(`Успешно сгенерировано и сохранено ${selectedBatchChapters.length} глав! 🎉 Вы можете переключить главы в левом меню, чтобы ознакомиться с результатом.`);
-      setSelectedBatchChapters([]);
+      if (controller.signal.aborted) {
+        setError(
+          completed > 0
+            ? `Генерация остановлена. Успешно сохранено глав: ${completed}.`
+            : "Генерация остановлена.",
+        );
+      } else {
+        setResult(`Успешно сгенерировано и сохранено ${selectedBatchChapters.length} глав! 🎉 Вы можете переключить главы в левом меню, чтобы ознакомиться с результатом.`);
+        setSelectedBatchChapters([]);
+      }
     } catch (err: any) {
-      setError(err.message || "Произошла непредвиденная ошибка при пакетной генерации.");
+      if (err?.name === "AbortError" || controller.signal.aborted) {
+        setError(
+          completed > 0
+            ? `Генерация остановлена. Успешно сохранено глав: ${completed}.`
+            : "Генерация остановлена.",
+        );
+      } else {
+        setError(err.message || "Произошла непредвиденная ошибка при пакетной генерации.");
+      }
     } finally {
+      if (abortRef.current === controller) abortRef.current = null;
       setLoading(false);
       setBatchProgress(null);
     }
   };
 
   const handleAction = async () => {
+    // Перед генерацией перечитать образец — мог быть только что загружен во вкладке «Автор»
+    const liveProfile = await loadAuthorProfile(story.id).catch(() => null);
+    if (liveProfile) setAuthorProfile(liveProfile);
+
+    const liveProfileSample = (liveProfile?.sample || "").trim();
+    const liveHasSample =
+      liveProfileSample.length >= 300
+      || buildFallbackAuthorSample(activeChapter?.id).length >= 300;
+
     if (
       humanize
       && humanizeDepth === "maximum"
-      && !hasAuthorSample
+      && !liveHasSample
       && activeTool === "continue"
       && continueMode === "whole_chapter"
     ) {
-      setError("Режим «Максимум» требует образец голоса (≥300 знаков) во вкладке «Автор». Либо выберите «Баланс» или «Быстро».");
+      setError("Режим «Максимум» нужен образец стиля (≥300 знаков): вкладка «Автор» или уже написанные главы. Либо выберите «Баланс» / «Быстро».");
       return;
     }
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     setLoading(true);
     setError(null);
@@ -220,7 +333,12 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
 
     let payload: any = { action: activeTool, ...(llmApiFields || { model: selectedModel, llmProvider }) };
     if (activeTool === "continue" || activeTool === "improve") {
-      applyHumanizePayload(payload);
+      applyHumanizePayload(payload, activeChapter?.id);
+      // State может отставать — явная подстановка свежего образца из IndexedDB
+      if (liveProfileSample.length >= 300) {
+        payload.authorSample = liveProfileSample;
+        if (liveProfile?.voiceSheet) payload.voiceSheet = liveProfile.voiceSheet;
+      }
     }
 
     if (activeTool === "continue") {
@@ -267,6 +385,7 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -275,11 +394,17 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
       }
 
       const data = await response.json();
+      if (controller.signal.aborted) return;
       setResult(data.result);
       setHumanizeReport(data.humanizeReport ?? null);
     } catch (err: any) {
-      setError(err.message || "Произошла непредвиденная ошибка ИИ.");
+      if (err?.name === "AbortError" || controller.signal.aborted) {
+        setError("Генерация остановлена.");
+      } else {
+        setError(err.message || "Произошла непредвиденная ошибка ИИ.");
+      }
     } finally {
+      if (abortRef.current === controller) abortRef.current = null;
       setLoading(false);
     }
   };
@@ -726,7 +851,11 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
                         key={depthId}
                         type="button"
                         disabled={locked}
-                        title={locked ? "Нужен образец голоса во вкладке «Автор»" : depth.description}
+                        title={
+                          locked
+                            ? "Нужен образец стиля: загрузите текст во вкладке «Автор» или напишите главу в книге"
+                            : depth.description
+                        }
                         onClick={() => setHumanizeDepth(depthId)}
                         className={`rounded border px-1.5 py-1.5 text-[10px] leading-tight transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                           humanizeDepth === depthId
@@ -740,12 +869,17 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
                     );
                   })}
                 </div>
-                {authorProfile?.voiceSheet || hasAuthorSample ? (
+                {sampleSource === "profile" || authorProfile?.voiceSheet ? (
                   <p className="text-[10px] text-emerald-400 flex items-center gap-1">
                     <CheckCircle2 className="w-3 h-3" />
                     {authorProfile?.voiceSheet
-                      ? "Пишем голосом автора — по образцу из инструмента «Автор»"
-                      : "Образец текста загружен — манера будет подтянута"}
+                      ? "Пишем голосом автора — по образцу из вкладки «Автор»"
+                      : "Образец из вкладки «Автор» — манера будет подтянута"}
+                  </p>
+                ) : sampleSource === "chapters" ? (
+                  <p className="text-[10px] text-emerald-400 flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3" />
+                    Образец стиля: уже написанные главы книги (можно уточнить во вкладке «Автор»)
                   </p>
                 ) : (
                   <div className="space-y-1">
@@ -759,8 +893,15 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
                       ))}
                     </select>
                     <p className="text-[10px] text-amber-400/90">
-                      Без образца «Максимум» недоступен. Загрузите главу 1 во вкладке «Автор».
+                      «Максимум» нужен образец стиля (≥300 знаков): вкладка «Автор» (TXT/Word) или любая уже написанная глава.
                     </p>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTool("author")}
+                      className="text-[10px] text-emerald-400 hover:text-emerald-300 underline cursor-pointer"
+                    >
+                      Открыть вкладку «Автор» и загрузить образец
+                    </button>
                   </div>
                 )}
               </>
@@ -768,47 +909,52 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
           </div>
         )}
 
-        {/* Action Button */}
-        {activeTool === "author" ? null : activeTool === "continue" && continueMode === "multi_chapters" ? (
+        {/* Action / Stop buttons */}
+        {activeTool === "author" ? null : loading ? (
+          <div className="space-y-2">
+            <div className="w-full py-2.5 bg-slate-800/80 border border-slate-700 text-slate-200 rounded-lg text-xs font-semibold flex items-center justify-center gap-2">
+              <div className="w-3.5 h-3.5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+              <span>
+                {batchProgress
+                  ? `Генерация ${batchProgress.current} из ${batchProgress.total}…`
+                  : activeTool === "continue"
+                    ? "Пишем продолжение сюжета…"
+                    : "ИИ творит волшебство…"}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={handleStopGeneration}
+              className="w-full py-2.5 bg-red-950/50 hover:bg-red-900/60 border border-red-800/60 hover:border-red-600/70 text-red-300 hover:text-red-200 rounded-lg text-xs font-semibold cursor-pointer transition-all flex items-center justify-center gap-2"
+              id="ai-stop-btn"
+              title="Остановить текущую генерацию"
+            >
+              <Square className="w-3.5 h-3.5 fill-current" />
+              <span>Остановить</span>
+            </button>
+          </div>
+        ) : activeTool === "continue" && continueMode === "multi_chapters" ? (
           <button
             onClick={handleBatchGenerate}
-            disabled={loading || selectedBatchChapters.length === 0}
+            disabled={selectedBatchChapters.length === 0}
             className="w-full py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:from-slate-800 disabled:to-slate-800 disabled:opacity-50 text-white rounded-lg text-xs font-semibold cursor-pointer transition-all flex items-center justify-center gap-2 shadow-lg"
           >
-            {loading ? (
-              <>
-                <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                <span>Генерация {batchProgress?.current || 1} главы...</span>
-              </>
-            ) : (
-              <>
-                <Wand2 className="w-4 h-4" />
-                <span>Сгенерировать выбранные главы ({selectedBatchChapters.length})</span>
-              </>
-            )}
+            <Wand2 className="w-4 h-4" />
+            <span>Сгенерировать выбранные главы ({selectedBatchChapters.length})</span>
           </button>
         ) : (
           <button
             onClick={handleAction}
-            disabled={loading || (activeTool === "improve" && !selectedText && !currentDraft)}
+            disabled={activeTool === "improve" && !selectedText && !currentDraft}
             className="w-full py-2.5 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 disabled:from-slate-800 disabled:to-slate-800 disabled:opacity-50 text-white rounded-lg text-xs font-semibold cursor-pointer transition-all flex items-center justify-center gap-2 shadow-lg"
             id="ai-action-btn"
           >
-            {loading ? (
-              <>
-                <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                <span>ИИ творит волшебство...</span>
-              </>
-            ) : (
-              <>
-                <Wand2 className="w-4 h-4" />
-                <span>
-                  {activeTool === "continue" && (continueMode === "whole_chapter" ? "Написать целую главу" : "Сгенерировать продолжение")}
-                  {activeTool === "improve" && "Отполировать текст"}
-                  {activeTool === "brainstorm" && "Устроить мозговой штурм"}
-                </span>
-              </>
-            )}
+            <Wand2 className="w-4 h-4" />
+            <span>
+              {activeTool === "continue" && (continueMode === "whole_chapter" ? "Написать целую главу" : "Сгенерировать продолжение")}
+              {activeTool === "improve" && "Отполировать текст"}
+              {activeTool === "brainstorm" && "Устроить мозговой штурм"}
+            </span>
           </button>
         )}
 

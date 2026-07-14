@@ -316,7 +316,7 @@ app.post("/api/writer/author", async (req, res) => {
     const overloaded = status === 503 || status === 500;
     const quota = status === 429;
     const message = overloaded
-      ? "LLM-сервис временно перегружен. Черновик не изменён — попробуйте снова через минуту или смените провайдера (Gemini/NVIDIA)."
+      ? "LLM-сервис временно перегружен. Черновик не изменён — попробуйте снова через минуту или смените провайдера (Groq / Gemini / NVIDIA)."
       : quota
         ? "Квота LLM исчерпана. Черновик не изменён. Переключитесь на другой провайдер в шапке."
         : error.message || "Не удалось выполнить авторскую редактуру.";
@@ -348,6 +348,7 @@ app.post("/api/writer/ai", async (req, res) => {
     humanizeDepth,
     chapterCandidates,
     detectorSegments,
+    adaptiveStyleGuidance,
     llmProvider: llmProviderRaw,
     apiKeys,
   } = req.body;
@@ -671,6 +672,9 @@ ${text || ""}
           ? `ПЕРСОНА РАССКАЗЧИКА:\n${preset.directives}`
           : "";
       systemInstruction = [systemInstruction, humanStyleDirectives(), personaBlock].filter(Boolean).join("\n\n");
+      if (typeof adaptiveStyleGuidance === "string" && adaptiveStyleGuidance.trim()) {
+        systemInstruction += `\n\n${adaptiveStyleGuidance.slice(0, 4_000)}`;
+      }
       if (typeof authorSample === "string" && authorSample.trim().length >= 300) {
         const styleTarget = typeof text === "string" && text.trim()
           ? text
@@ -716,7 +720,9 @@ ${text || ""}
         callGenerate,
         {
           model: selectedModel,
-          personaBlock: persona,
+          personaBlock: [persona, typeof adaptiveStyleGuidance === "string" ? adaptiveStyleGuidance.slice(0, 4_000) : ""]
+            .filter(Boolean)
+            .join("\n\n"),
           humanizeDepth: depthConfig.id,
         },
       );
@@ -745,6 +751,7 @@ ${text || ""}
         voiceSheet,
         voicePreset: typeof voicePreset === "string" ? voicePreset : undefined,
         humanizeDepth: depthConfig.id,
+        adaptiveStyleGuidance: typeof adaptiveStyleGuidance === "string" ? adaptiveStyleGuidance.slice(0, 4_000) : undefined,
         chapterCandidates: typeof chapterCandidates === "number" ? chapterCandidates : undefined,
         model: selectedModel,
       }, callGenerate);
@@ -824,9 +831,9 @@ ${text || ""}
 
     let userMessage = error.message || "An unexpected error occurred during API execution.";
     if (isOverloaded) {
-      userMessage = "LLM-сервис сейчас перегружен. Повторите через минуту или переключите провайдера (Gemini / NVIDIA / Обе) в шапке приложения.";
+      userMessage = "LLM-сервис сейчас перегружен. Повторите через минуту или переключите провайдера (Groq / Gemini / Автовыбор) в шапке.";
     } else if (isQuotaExhausted) {
-      userMessage = "Квота LLM исчерпана. Переключитесь на другой провайдер в шапке (NVIDIA ↔ Gemini) или режим «Обе».";
+      userMessage = "Квота LLM исчерпана. Переключитесь на другой провайдер в шапке (Groq / Gemini / OpenRouter) или «Автовыбор».";
     } else if (/API_KEY|не задан|not configured/i.test(message)) {
       userMessage = message;
     }
@@ -861,7 +868,12 @@ async function startServer() {
     const status = getLlmStatus();
     console.log(`Server running on http://localhost:${PORT}`);
     console.log(
-      `LLM: preference=${status.providerPreference}, geminiKeys=${status.geminiKeys}, nvidia=${status.nvidiaConfigured ? status.nvidiaDefaultModel : "off"}`,
+      `LLM: preference=${status.providerPreference}`
+      + `, groq=${status.groqConfigured ? status.groqDefaultModel : "off"}`
+      + `, geminiKeys=${status.geminiKeys}`
+      + `, openrouter=${status.openrouterConfigured ? "on" : "off"}`
+      + `, nvidia=${status.nvidiaConfigured ? status.nvidiaDefaultModel : "off"}`
+      + ` | auto: Groq→Gemini→OpenRouter→NVIDIA`,
     );
   });
 }
