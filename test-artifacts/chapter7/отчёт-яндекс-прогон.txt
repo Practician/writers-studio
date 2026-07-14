@@ -1,30 +1,29 @@
-Яндекс-нейродетектор — гл.7 (2026-07-14, перепись + training local)
+Яндекс-нейродетектор — гл.7 (2026-07-14 / 15)
 
-ТЕКСТ
-  src/data/labyrinth/chapter-7.txt (~2072 слов)
-  Сюжет: сон (институт-загадка → дом/мама → сон во сне) → NFC/метки через жест
-  (без нумерованного лога 1–17) → ритм пальцев → двойная ладонь → Уровень 2
+СТРАТЕГИЯ (лучшая)
+  Одна сцена: сон → ладонь/метки → двойная ладонь → вход Ур.2
+  Обход Ур.2, карта, «ноль меток» — в гл.8
+  Голос: связный дневник (как база ~74%), не телеграф
 
-ЛОКАЛЬНЫЙ AI-tell (humanStyle, после обучения interface/*)
-  score ≈ 6/100  (1 hit: «обнаружена новая метка» — сюжетный якорь)
-  burstiness ≈ 0.61
-  interfaceTellShare низкий (убраны NFC/CW/CCW/«N. текст»)
+ИТОГ (текущий канон)
+  words ≈ 1296
+  Yandex AI% ≈ 73.2  HUMAN=2 AI=5
+  local AI-tell ≈ 7–11 (hit: «обнаружена новая метка» — сюжет)
+  HUMAN-блоки: старт у стены; сбор точек по кольцам/чаше
 
-YANDEX (после +«я»)
-  AI% ≈ 74.3  (AI=8 LAI=1 H=3)  ← было ~82.8 / H=2
-  HUMAN: старт у стены; сбор точек по кольцам; малый отпечаток/балка
-  Плотность «я»: ~12.9/100 букв (гл.6 ~17); местоимений «я» ~105 vs 74 в гл.6
-  Локальный AI-tell: score≈8, burst≈0.60
+REWRITE AI-СЕГМЕНТОВ
+  Ручной: AI-куски (сон, дом, явь, пальцы, щель) — HUMAN freeze
+  LLM rewrite_detector_segments:
+    Gemini: rewritten=5, Yandex after ≈ 73.5% — НЕ лучше, отклонён
+    Groq: rewritten=0 (gate quality)
 
-ОБУЧЕНИЕ ПРИЛОЖЕНИЯ
-  server/humanStyle.ts:
-    - category interface: nfc-eng, cw-ccw, slash-ui-label, ne-najdeno-counter,
-      numbered-log-item, obnaruzhena-metka-spam, ur-level-code, system-breathes
-    - interfaceTellShare() + вклад в aiTellScore
-    - YANDEX_DETECTOR_STYLE: пункты 7–10 (анти-квест-лог, сон, ритм, interface)
-  labyrinthCanon: lr-style-patterns-ch7, обновлены lr-detector-yandex, lr-palm-ch7
-  tests/humanStyle.test.ts: тест interface UI-log
+СРАВНЕНИЕ
+  телеграф ~1000 слов     AI% 100
+  сжатие ~1200 «скелет»   AI% ~86
+  длинная связная ~2100   AI% ~74
+  одна сцена ~1300        AI% ~73  ← текущий лучший баланс
 
 ФАЙЛЫ
-  DOCX: test-artifacts/chapter7/Лабиринт-Глава-7-Отпечаток-ладони-maximum.docx
-  Downloads + Главы/
+  src/data/labyrinth/chapter-7.txt
+  test-artifacts/chapter7/глава-7-final.txt
+  DOCX / Downloads
