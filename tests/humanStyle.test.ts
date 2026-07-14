@@ -22,6 +22,7 @@ import {
   HUMANIZE_DEPTHS,
   VOICE_PRESETS,
   YANDEX_DETECTOR_STYLE,
+  interfaceTellShare,
 } from "../server/humanStyle";
 import { priorityStyleBlockIndexes } from "../server/authorPipeline";
 import {
@@ -43,11 +44,26 @@ test("catalog detects both legacy and new generative clichés", () => {
 test("humanStyleDirectives include Yandex detector style patterns", () => {
   const block = humanStyleDirectives();
   assert.ok(YANDEX_DETECTOR_STYLE.includes("телеграф"));
+  assert.ok(YANDEX_DETECTOR_STYLE.includes("квест-лог") || YANDEX_DETECTOR_STYLE.includes("не найдено"));
   assert.ok(block.includes("ПАТТЕРНЫ НЕЙРОДЕТЕКТОРА"));
   assert.ok(block.includes("умеренно"));
   assert.ok(block.includes("Начну снова") || block.includes("дневн"));
   // не требуем «минимум я» как единственный режим
   assert.ok(block.includes("не вычищай до нуля") || block.includes("умеренно"));
+});
+
+test("interface UI-log patterns are flagged (ch7 vs ch6 lesson)", () => {
+  const uiLog =
+    "На экране NFC. 1. касание / база. 2. CW / CCW. не найдено: 14. обнаружена новая метка. УР. 2. система дышит.";
+  const hits = detectAiTells(uiLog);
+  const ids = new Set(hits.map((h) => h.id));
+  assert.ok(ids.has("nfc-eng"), "NFC");
+  assert.ok(ids.has("cw-ccw-eng") || ids.has("slash-ui-label"), "CW or slash labels");
+  assert.ok(ids.has("ne-najdeno-counter"), "counter");
+  assert.ok(ids.has("numbered-log-item"), "numbered log");
+  const body =
+    "Я крутил кольцо медленно и смотрел. Число стало ярче. Заряд около двадцати процентов. Мята ещё чувствовалась.";
+  assert.ok(aiTellScore(uiLog).score > aiTellScore(body).score);
 });
 
 test("bureaucratic language is flagged", () => {

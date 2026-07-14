@@ -1,0 +1,19 @@
+{
+  "words": 2072,
+  "local": {
+    "score": 6,
+    "burstiness": 0.61,
+    "hits": [
+      "obnaruzhena-metka-spam"
+    ]
+  },
+  "yandex": {
+    "aiPct": 82.8,
+    "stats": {
+      "AI": 8,
+      "LAI": 2,
+      "HUMAN": 2
+    }
+  },
+  "note": "connected prose, less UI log, interface patterns trained"
+}

@@ -4,13 +4,90 @@
  *
  * CANON_V: поднимать при смене стыков/механик (merge обновит story в localStorage).
  */
-import type { Character, Chapter, Story, WorldRule } from "../types";
+import type { AuthorProfileRecord, AuthorVoiceSheet, Character, Chapter, Story, WorldRule } from "../types";
+import { chapterOrdinal } from "../lib/chapterContext";
 import chapter5Text from "./labyrinth/chapter-5.content";
 import chapter6Text from "./labyrinth/chapter-6.content";
+import chapter7Text from "./labyrinth/chapter-7.content";
 
 export const LABYRINTH_STORY_ID = "story-labyrinth";
-export const LABYRINTH_CANON_VERSION = 3;
-export const LABYRINTH_CANON_MARKER = `CANON_V${LABYRINTH_CANON_VERSION}_RINGS_CH6`;
+/** v6: текст гл.7 (сон/NFC/двойная ладонь) в seed; пустой слот 7 заполняется каноном. */
+export const LABYRINTH_CANON_VERSION = 6;
+export const LABYRINTH_CANON_MARKER = `CANON_V${LABYRINTH_CANON_VERSION}_PALM_CH7`;
+/** Маркер образца автора: при смене версии канона профиль перезапишется, если не помечен user: */
+export const LABYRINTH_AUTHOR_SAMPLE_MARKER = `labyrinth-canon-ch5-6-v${LABYRINTH_CANON_VERSION}`;
+
+export function isLabyrinthStory(
+  story: Pick<Story, "id" | "title"> & { chapters?: Chapter[] } | null | undefined,
+): boolean {
+  if (!story) return false;
+  if (story.id === LABYRINTH_STORY_ID) return true;
+  const title = story.title || "";
+  if (/лабиринт/i.test(title) || /labyrinth/i.test(title)) return true;
+  // эвристика: канон-id глав или типичные названия
+  const chapters = story.chapters || [];
+  if (chapters.some((c) => /^lab-ch-\d+/i.test(c.id || ""))) return true;
+  if (
+    chapters.some(
+      (c) =>
+        /число\s*20/i.test(c.title || "") ||
+        /отпечаток\s+ладони/i.test(c.title || "") ||
+        /первый\s+круг/i.test(c.title || ""),
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Восстановить слоты 1–9 и текст гл.5–6 в конкретной книге (даже если title не «Лабиринт»).
+ * Вызывается кнопкой «Канон» / при merge.
+ */
+export function ensureLabyrinthChapterSlots(story: Story): Story {
+  const seed = buildLabyrinthStory();
+  const seedByOrdinal = new Map<number, Chapter>();
+  for (const ch of seed.chapters) {
+    const n = ordinalOf(ch);
+    if (n != null) seedByOrdinal.set(n, ch);
+  }
+
+  const byOrdinal = new Map<number, Chapter>();
+  const unnumbered: Chapter[] = [];
+  for (const ch of story.chapters || []) {
+    const n = ordinalOf(ch);
+    if (n == null) {
+      unnumbered.push(ch);
+      continue;
+    }
+    const prev = byOrdinal.get(n);
+    if (!prev || (ch.content || "").length > (prev.content || "").length) {
+      byOrdinal.set(n, ch);
+    }
+  }
+
+  const ordered: Chapter[] = [];
+  const maxCanon = Math.max(0, ...seedByOrdinal.keys());
+  for (let n = 1; n <= maxCanon; n++) {
+    const canon = seedByOrdinal.get(n);
+    if (!canon) continue;
+    ordered.push(applyCanonChapter(byOrdinal.get(n), canon, n));
+    byOrdinal.delete(n);
+  }
+  const extras = [...byOrdinal.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, ch]) => ch);
+
+  return {
+    ...story,
+    chapters: [...ordered, ...extras, ...unnumbered],
+    worldBible: story.worldBible?.includes(LABYRINTH_CANON_MARKER)
+      ? story.worldBible
+      : seed.worldBible,
+    bookPlan: story.bookPlan?.includes(LABYRINTH_CANON_MARKER) ? story.bookPlan : seed.bookPlan,
+    updatedAt: Date.now(),
+  };
+}
 
 /** Короткие правила для WorldBuilder + склейки в worldBible. */
 export const LABYRINTH_WORLD_RULES: WorldRule[] = [
@@ -48,19 +125,31 @@ export const LABYRINTH_WORLD_RULES: WorldRule[] = [
     id: "lr-style",
     title: "Голос и повествование",
     content:
-      "1 лицо, сухой инженерный тон, survival, стиль «дневник». «Я» умеренно (~3–7 на 100 слов): не в каждое предложение, но не вычищать до нуля (рубка без «я» → Yandex 100% AI). Без тройных повторов одной сцены. Без «Начну снова», без бессмысленных часов на экране. Без штампов «волна ужаса», «холод по спине». Только русский.",
+      "1 лицо, сухой инженерный тон, survival, стиль «дневник» (канон: Word-гл.6 optimal). «Я» умеренно (~3–7 на 100 слов): не в каждое предложение, но не вычищать до нуля. Смешивай полные фразы и короткие бытовые («Подумал, что…», «Не сейчас.»). Конкретика: %, жест, запах, сектор/кольцо — вместо абстрактных выводов. Без тройных петель «и что дальше?». Без «Начну снова», без часов на экране. Без штампов «волна ужаса», «холод по спине». Только русский. Образец стиля: главы 5–6 (authorSample).",
+  },
+  {
+    id: "lr-style-patterns-ch6",
+    title: "Паттерны стиля гл. 6 (для продолжения)",
+    content:
+      "Опора на текст Word «Глава 6. Число 20» (optimal): 1) Вход из стыка 5→6 — тьма, правый коридор, диагональ отмены, 2%, голод/жажда, запах мяты/мёда. 2) Механика: три кольца × 12, яркость = сборка, поймать яркую 20. 3) Ресурс: масса → сытость; телефон на диск → число тает, заряд ~20%. 4) Финал: отпечаток ладони ВИДЕН, НЕ активирован («Не сейчас… им займусь, когда буду готов»). 5) Ритм: абзацы ~40–80 слов, внутренний монолог без лекций читателю. 6) Дальше (гл.7+): тот же голос и конкретика; не откатывать заряд к 2% и не решать кольца заново с нуля.",
   },
   {
     id: "lr-detector-yandex",
     title: "Нейродетектор (Yandex) — стиль",
     content:
-      "Цель: HUMAN-сегменты, не телеграф. Связная проза + бытовые мысли. Один проход сцены. Конкретика (жест, заряд %, запах) вместо «приближаюсь к пониманию». После генерации: локальный AI-tell + при возможности Yandex; AI-сегменты — rewrite_detector_segments, HUMAN не трогать.",
+      "Цель: HUMAN-сегменты, не телеграф и не UI-лог. Связная проза + бытовые мысли. Один проход сцены. Конкретика (жест, заряд %, запах) вместо «приближаюсь к пониманию». Не цепочки «1. метка 2. метка», не CW/CCW/NFC-латиница, не спам «не найдено: N». После генерации: локальный AI-tell (в т.ч. category interface) + при возможности Yandex; AI-сегменты — rewrite_detector_segments, HUMAN не трогать. Эталон: гл.6 optimal.",
   },
   {
     id: "lr-palm-ch7",
     title: "Отпечаток ладони (крючок гл. 7)",
     content:
-      "В конце гл. 6 отпечаток только обнаружен, НЕ активирован. Активация и переход на Уровень 2 — в главе 7.",
+      "В конце гл. 6 отпечаток только обнаружен, НЕ активирован. Гл. 7: сон (институт-загадка → дом/мама/зачёт → сон во сне → явь). Телефон к отпечатку → «обнаружена новая метка», список меток; сбор светящихся точек у колец/чаши/стены — через жест, без нумерованного лога на всю главу; ритм по кончикам пальцев → двойная ладонь (2-й слой, другой цвет); счётчик «не найдено» редко; вход Ур.2. Не откатывать 20%. Не решать кольца с нуля.",
+  },
+  {
+    id: "lr-style-patterns-ch7",
+    title: "Паттерны стиля гл. 7 (сон + метки, анти-UI)",
+    content:
+      "1) Стык с гл.6: 20%, сытость, «не сейчас», засыпает у стены. 2) Сон: аудитория+загадка → дом/мама → сон во сне → явь (кроссовки/ключи/%). 3) Метки: телефон плашмя к отпечатку; точки по кольцам/чаше/стене; ритм пальцев → янтарный 2-й слой; щель Ур.2. 4) Пиши как гл.6: тело, %, запах, ошибка попытки; подписи экрана вшиты в абзац. 5) Запрет: 10+ пунктов «N. текст», CW/CCW, спам счётчика, телеграф на весь текст, отполированная «новелла» сна.",
   },
   {
     id: "lr-resource-choice",
@@ -149,6 +238,108 @@ export const LABYRINTH_CHARACTER: Character = {
     "Студент 20–25 лет. Футболка, джинсы, кроссовки, связка ключей, смартфон с тепловизором. Один на Уровне 1. Имя в тексте может не называться — повествование от 1 лица.",
 };
 
+/**
+ * Образец голоса для humanize / generate: хвост гл.5 + полный текст гл.6 из Word optimal.
+ * Уходит в authorSample, чтобы гл.7+ писались в тех же паттернах.
+ */
+export const LABYRINTH_AUTHOR_SAMPLE: string = [
+  chapter5Text.trim().slice(-2500),
+  chapter6Text.trim(),
+]
+  .filter(Boolean)
+  .join("\n\n");
+
+export const LABYRINTH_STYLE_DESCRIPTION =
+  "Голос канона «Лабиринт» по главам 5–6 (Word optimal): 1 лицо, дневник инженера-студента в survival. Конкретика (заряд %, запах, кольца, ключи), умеренное «я», без пафоса и без телеграфа. Стыки между главами непрерывны; механики не откатываются.";
+
+export const LABYRINTH_PROTECTED_TERMS = [
+  "тепловизор",
+  "Уровень 1",
+  "Уровень 2",
+  "Лабиринт",
+  "мята",
+  "мёд",
+  "меда",
+  "число 20",
+  "20%",
+  "отпечаток ладони",
+  "правило левой руки",
+  "кольца",
+];
+
+/** Паспорт голоса по тексту Word-гл.6 — для generate/humanize без отдельной загрузки файла. */
+export const LABYRINTH_VOICE_SHEET: AuthorVoiceSheet = {
+  summary:
+    "Повествование от 1 лица: студент в темноте, думает вслух, считает ресурсы, ошибается, злится. Ритм дневника — связная проза с бытовыми репликами, не инструкция и не «красивая литература».",
+  voiceRules: [
+    "1 лицо; «я» умеренно (есть в тексте, но не в каждом предложении).",
+    "Конкретика: проценты заряда, запахи (мята/мёд), жесты (ключ, ладонь, кольца), размеры (~2×2 м).",
+    "Внутренний монолог короткий: «Подумал…», «Не сейчас», «Ну, что же…» — без лекций читателю.",
+    "Абзацы средней длины; чередуй действие и короткую мысль.",
+    "Механики описывай через пробу героя (крутил — ярче/тусклее), не через энциклопедию мира.",
+    "Стык с прошлой главой: не сбрасывай голод/заряд/локацию без причины.",
+    "Крючки оставляй открытыми (отпечаток есть — активация позже), не закрывай всё в одной главе.",
+  ],
+  avoid: [
+    "Начну снова",
+    "случайные часы на экране (3:47 и т.п.)",
+    "тройные петли «и что дальше?» / повтор одной сцены",
+    "телеграф без «я» на весь текст",
+    "штампы: волна ужаса, холодок по спине, воздух сгустился",
+    "откат канона: снова 2% и кольца с нуля после уже снятого ресурса",
+    "активация отпечатка ладони до главы 7",
+    "другие люди на Уровне 1",
+  ],
+  evidence: [
+    {
+      quote: "Правый коридор был темнее, чем петля за спиной.",
+      observation: "Стык 5→6: продолжение тьмы, не «свет из ниоткуда».",
+    },
+    {
+      quote: "Мне нужно было поймать именно яркую двадцатку.",
+      observation: "Механика через цель героя, не через мануал.",
+    },
+    {
+      quote: "Отпечаток никуда не денется — им займусь, когда буду готов.",
+      observation: "Финал-крючок: отложено, не активировано.",
+    },
+  ],
+};
+
+/** Профиль автора для IndexedDB: образец = Word гл.6 (+хвост 5). */
+export function buildLabyrinthAuthorProfile(now = Date.now()): AuthorProfileRecord {
+  return {
+    storyId: LABYRINTH_STORY_ID,
+    sample: LABYRINTH_AUTHOR_SAMPLE,
+    sampleFileName: LABYRINTH_AUTHOR_SAMPLE_MARKER,
+    styleDescription: LABYRINTH_STYLE_DESCRIPTION,
+    protectedTerms: [...LABYRINTH_PROTECTED_TERMS],
+    voiceSheet: LABYRINTH_VOICE_SHEET,
+    updatedAt: now,
+  };
+}
+
+/**
+ * Нужно ли обновить профиль автора каноном.
+ * Не трогаем, если пользователь явно загрузил свой образец (sampleFileName начинается с user:).
+ */
+export function shouldSeedLabyrinthAuthorProfile(
+  existing: AuthorProfileRecord | undefined | null,
+): boolean {
+  if (!existing) return true;
+  const name = (existing.sampleFileName || "").trim();
+  if (name.startsWith("user:")) return false;
+  if (name === LABYRINTH_AUTHOR_SAMPLE_MARKER && (existing.sample || "").trim().length >= 300) {
+    return false;
+  }
+  // старый канон-маркер / пустой образец → обновить
+  if (!name || name.startsWith("labyrinth-canon") || (existing.sample || "").trim().length < 300) {
+    return true;
+  }
+  // чужой/неизвестный файл — не затирать
+  return false;
+}
+
 function chapter(
   id: string,
   title: string,
@@ -196,7 +387,8 @@ export function buildLabyrinthChapters(): Chapter[] {
     chapter(
       "lab-ch-7",
       "Глава 7. Отпечаток ладони",
-      "Старт: после гл. 6 — заряд ~20%, сытость, отпечаток на стене. Активация ладони, отклик узла, переход. Открывается путь/Уровень 2. Не откатывать заряд к 2%. Не решать кольца заново с нуля как будто гл. 6 не было.",
+      "Старт: после гл. 6 — ~20%, сытость, отпечаток НЕ активирован; герой засыпает у стены. Сон: институт (загадка на доске — иначе не выйти из аудитории) → дом, мама, зачёт, весь день «лабиринт был сном» → сон во сне → выворот, просыпается в Лабиринте. Явь: телефон к отпечатку → «обнаружена новая метка», NFC-список; сбор светящихся точек (текст/числа) у колец, чаши и т.д.; ритм по кончикам пальцев отпечатка → второй слой (двойная ладонь, другой цвет); счётчик «не найдено: N»; вход Ур.2. Не откатывать заряд к 2%. Не решать кольца с нуля.",
+      chapter7Text.trim(),
     ),
     chapter(
       "lab-ch-8",
@@ -227,19 +419,53 @@ export function buildLabyrinthStory(now = Date.now()): Story {
   };
 }
 
+function ordinalOf(ch: Chapter): number | null {
+  return chapterOrdinal(ch.title, ch.id);
+}
+
+function applyCanonChapter(existing: Chapter | undefined, canon: Chapter, n: number): Chapter {
+  if (!existing) {
+    return { ...canon };
+  }
+  // 5–6: всегда полный текст канона (стык, кольца, Word optimal)
+  if (n === 5 || n === 6) {
+    return {
+      ...existing,
+      id: existing.id || canon.id,
+      title: canon.title,
+      summary: canon.summary,
+      content: canon.content,
+    };
+  }
+  // 7: title+summary канона; пустой content — из seed; непустой пользовательский не затираем
+  if (n === 7) {
+    return {
+      ...existing,
+      id: existing.id || canon.id,
+      title: canon.title,
+      summary: canon.summary,
+      content: (existing.content || "").trim() || canon.content || "",
+    };
+  }
+  // 1–4, 8–9: title/summary канона, если пусто; content не трогаем
+  return {
+    ...existing,
+    id: existing.id || canon.id,
+    title: existing.title?.trim() ? existing.title : canon.title,
+    summary: existing.summary?.trim() ? existing.summary : canon.summary,
+    content: existing.content || "",
+  };
+}
+
 /**
  * Влить/обновить канон Лабиринта в список stories (localStorage).
  * - нет story → prepend seed
- * - есть → обновить bible/plan/rules; гл. 5–6 content+summary; гл. 7 summary; не трогать чужой текст 1–4/8+ если content уже есть
+ * - есть → bible/plan/rules; гл.5–6 content; слоты 1–9 по порядку; удалённые главы восстанавливаются
  */
 export function mergeLabyrinthCanonIntoStories(stories: Story[]): Story[] {
   const seed = buildLabyrinthStory();
   const list = Array.isArray(stories) ? [...stories] : [];
-  const idx = list.findIndex(
-    (s) =>
-      s.id === LABYRINTH_STORY_ID ||
-      /лабиринт/i.test(s.title || "") && /путь\s*домой/i.test(s.title || ""),
-  );
+  const idx = list.findIndex((s) => isLabyrinthStory(s));
 
   if (idx < 0) {
     return [seed, ...list];
@@ -250,65 +476,15 @@ export function mergeLabyrinthCanonIntoStories(stories: Story[]): Story[] {
     typeof existing.worldBible === "string" &&
     existing.worldBible.includes(LABYRINTH_CANON_MARKER);
 
-  const seedByOrdinal = new Map<number, Chapter>();
-  for (const ch of seed.chapters) {
-    const m = ch.title.match(/(?:глава|chapter)\s*(\d+)/iu);
-    if (m) seedByOrdinal.set(Number(m[1]), ch);
-  }
-
-  const mergedChapters = existing.chapters.map((ch) => {
-    const m = ch.title.match(/(?:глава|chapter)\s*(\d+)/iu);
-    if (!m) return ch;
-    const n = Number(m[1]);
-    const canon = seedByOrdinal.get(n);
-    if (!canon) return ch;
-
-    // 5–6: всегда summary + content из канона (стык и кольца)
-    if (n === 5 || n === 6) {
-      return {
-        ...ch,
-        title: canon.title,
-        summary: canon.summary,
-        content: canon.content,
-      };
-    }
-    // 7: summary канона (крючок), content не затираем
-    if (n === 7) {
-      return { ...ch, title: ch.title || canon.title, summary: canon.summary };
-    }
-    // прочие: summary только если пустой
-    if (!ch.summary?.trim() && canon.summary) {
-      return { ...ch, summary: canon.summary };
-    }
-    return ch;
-  });
-
-  // добавить отсутствующие канон-главы (1–9) в конец блока, если их нет
-  const haveOrdinals = new Set(
-    mergedChapters
-      .map((ch) => {
-        const m = ch.title.match(/(?:глава|chapter)\s*(\d+)/iu);
-        return m ? Number(m[1]) : null;
-      })
-      .filter((n): n is number => n != null),
-  );
-  for (const ch of seed.chapters) {
-    const m = ch.title.match(/(?:глава|chapter)\s*(\d+)/iu);
-    const n = m ? Number(m[1]) : null;
-    if (n != null && !haveOrdinals.has(n)) {
-      mergedChapters.push(ch);
-      haveOrdinals.add(n);
-    }
-  }
+  const withSlots = ensureLabyrinthChapterSlots(existing);
 
   // world rules: заменить/добавить по id канона
   const ruleMap = new Map((existing.worldRules || []).map((r) => [r.id, r]));
   for (const r of seed.worldRules) ruleMap.set(r.id, r);
-  // убрать старые дубликаты по title колец/стыка если другие id
   const rules = [...ruleMap.values()];
 
   list[idx] = {
-    ...existing,
+    ...withSlots,
     id: existing.id || LABYRINTH_STORY_ID,
     title: existing.title || seed.title,
     genre: existing.genre || seed.genre,
@@ -324,8 +500,8 @@ export function mergeLabyrinthCanonIntoStories(stories: Story[]): Story[] {
             )
           : [LABYRINTH_CHARACTER, ...existing.characters]
         : seed.characters,
-    chapters: mergedChapters,
-    updatedAt: already ? existing.updatedAt : Date.now(),
+    // always bump when marker changes so localStorage rewrite is obvious
+    updatedAt: already ? withSlots.updatedAt : Date.now(),
   };
 
   return list;

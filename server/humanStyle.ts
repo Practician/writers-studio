@@ -10,7 +10,13 @@ import { computeStyleStats } from "../src/lib/authorAudit";
 // Источники 2025–2026: Wikipedia Signs of AI writing, blader/humanizer, Aboudjem
 // (43 паттерна / 5 voices), harshaneel/humanize (9 levers), русские списки ИИ-штампов.
 
-export type AiTellCategory = "lexical" | "bureaucratic" | "structural" | "sensational" | "rlhf";
+export type AiTellCategory =
+  | "lexical"
+  | "bureaucratic"
+  | "structural"
+  | "sensational"
+  | "rlhf"
+  | "interface";
 
 export interface AiTellPattern {
   id: string;
@@ -22,6 +28,11 @@ export interface AiTellPattern {
 
 // Каталог адаптирован под русскую художественную прозу. Тире и безупречная грамматика
 // сознательно НЕ считаются признаками: в русской прозе тире — норма (диалоги).
+//
+// Блок interface/* — из прогонов Yandex на «Лабиринт» гл.7 (2026-07): UI-лог, англ.
+// интерфейс, нумерованные пункты меток часто уводят сегменты в AI, тогда как
+// «тело + жест + %» (гл.6 optimal) идут в HUMAN. Локальный детектор учится
+// ловить это до внешней проверки.
 export const AI_TELL_CATALOG: AiTellPattern[] = [
   // — гладкие универсальные формулы
   { id: "ne-prosto", category: "lexical", pattern: /не просто/iu, label: "«не просто X…»", weight: 3 },
@@ -72,6 +83,15 @@ export const AI_TELL_CATALOG: AiTellPattern[] = [
   { id: "s-odnoy-storony", category: "rlhf", pattern: /с одной стороны[^.!?]{0,80}с другой/iu, label: "сбалансированное «с одной / с другой»", weight: 3 },
   { id: "takim-obrazom", category: "rlhf", pattern: /(?<![\p{L}\p{N}])таким образом(?![\p{L}\p{N}])/iu, label: "«таким образом»", weight: 2 },
   { id: "imeet-smysl", category: "rlhf", pattern: /имеет смысл (?:отметить|сказать|подчеркнуть)/iu, label: "«имеет смысл отметить»", weight: 2 },
+  // — UI / игровой лог в художественной прозе (Yandex + гл.7 vs эталон гл.6)
+  { id: "nfc-eng", category: "interface", pattern: /\bNFC\b/u, label: "английский NFC в прозе", weight: 2 },
+  { id: "cw-ccw-eng", category: "interface", pattern: /\b(?:CW|CCW)\b/u, label: "CW/CCW вместо «по/против часовой»", weight: 2 },
+  { id: "ur-level-code", category: "interface", pattern: /\bУР\.\s*\d+\b/u, label: "код «УР. N» как UI-штамп (лучше «Уровень N» в речи)", weight: 1 },
+  { id: "slash-ui-label", category: "interface", pattern: /[а-яёa-z]{2,}\s*\/\s*[а-яёa-z]{2,}/iu, label: "UI-метка «слово / слово»", weight: 1 },
+  { id: "ne-najdeno-counter", category: "interface", pattern: /не найдено\s*[:—–-]?\s*\d+/iu, label: "счётчик «не найдено: N»", weight: 2 },
+  { id: "numbered-log-item", category: "interface", pattern: /(?:^|[\n.!?…]\s*)\d{1,2}\.\s+[«"«]?[а-яёa-z]/imu, label: "нумерованный лог «1. текст»", weight: 1 },
+  { id: "obnaruzhena-metka-spam", category: "interface", pattern: /обнаружена новая метка/iu, label: "повтор UI-строки «обнаружена новая метка»", weight: 1 },
+  { id: "system-breathes", category: "interface", pattern: /система дышит/iu, label: "штамп «система дышит»", weight: 2 },
 ];
 
 export interface AiTellHit {
@@ -136,6 +156,16 @@ export interface AiTellScore {
   hits: AiTellHit[];
 }
 
+/** Доля «интерфейсных» попаданий: нумерованный лог, счётчики, англ. UI. */
+export function interfaceTellShare(text: string): number {
+  const hits = detectAiTells(text).filter((hit) => {
+    const entry = AI_TELL_CATALOG.find((item) => item.id === hit.id);
+    return entry?.category === "interface";
+  });
+  const wordCount = Math.max(wordsOf(text).length, 1);
+  return hits.length / wordCount;
+}
+
 export function aiTellScore(text: string): AiTellScore {
   const hits = detectAiTells(text);
   const wordCount = Math.max(wordsOf(text).length, 1);
@@ -144,12 +174,16 @@ export function aiTellScore(text: string): AiTellScore {
   const patternDensity = (weighted / wordCount) * 1000;
   const burstiness = sentenceBurstiness(text);
   const openerRepetition = repeatedOpenerShare(text);
+  const interfaceShare = interfaceTellShare(text);
 
-  // Составляющие: штампы (до 55), ровный ритм (до 30), однообразные зачины (до 15).
-  const patternComponent = Math.min(patternDensity * 4, 55);
-  const rhythmComponent = burstiness >= 0.55 ? 0 : Math.min(((0.55 - burstiness) / 0.55) * 30, 30);
-  const openerComponent = Math.min(openerRepetition * 60, 15);
-  const score = Math.round(Math.min(patternComponent + rhythmComponent + openerComponent, 100));
+  // Составляющие: штампы (до 50), UI-лог (до 15), ровный ритм (до 25), однообразные зачины (до 10).
+  const patternComponent = Math.min(patternDensity * 4, 50);
+  const interfaceComponent = Math.min(interfaceShare * 4000, 15);
+  const rhythmComponent = burstiness >= 0.55 ? 0 : Math.min(((0.55 - burstiness) / 0.55) * 25, 25);
+  const openerComponent = Math.min(openerRepetition * 50, 10);
+  const score = Math.round(
+    Math.min(patternComponent + interfaceComponent + rhythmComponent + openerComponent, 100),
+  );
   return { score, patternDensity, burstiness, openerRepetition, hits };
 }
 
@@ -369,14 +403,17 @@ const NINE_LEVERS = `ДЕВЯТЬ РЫЧАГОВ ЖИВОГО ТЕКСТА:
  * Паттерны, подтверждённые прогонами Yandex-нейродетектора (лабиринт, 2026-07).
  * Вшиваются в генерацию/рерайт, чтобы не оптимизировать «на глаз».
  */
-export const YANDEX_DETECTOR_STYLE = `ПАТТЕРНЫ НЕЙРОДЕТЕКТОРА (Yandex lab, обязательно):
+export const YANDEX_DETECTOR_STYLE = `ПАТТЕРНЫ НЕЙРОДЕТЕКТОРА (Yandex lab, обязательно; эталон: гл.6 optimal ≈ HUMAN, провал: UI-лог гл.7):
 1) НЕ пиши рубленый «телеграф» без подлежащего (цепочки «Шаг. Ещё. Стоял. Смотрел.» на весь текст) — такие сегменты часто идут в AI 100%.
-2) В повествовании от 1 лица держи «я» умеренно (~3–7 на 100 слов): не в каждое предложение, но и не вычищай до нуля. Безличные/глагольные куски — разрядка, не единственный режим.
+2) В повествовании от 1 лица держи «я» умеренно (~3–7 на 100 слов; в эталоне гл.6 ближе к 15–17 на 100 — лучше чуть больше «я», чем вычищать). Безличные/глагольные куски — разрядка, не единственный режим.
 3) Стиль «дневник / связная проза инженера»: полные фразы, бытовые мысли («подумал», «решил», «достал»), лёгкая шероховатость. Не «литературный пафос» и не «инструкция к механизму».
 4) Один проход сцены: не повторяй одно и то же действие 2–3 раза («подошёл к отпечатку / и что дальше?» петлёй).
 5) Не начинай главу с «Начну снова» и не вставляй бессмысленные часы экрана (типа «3:47»), если они не сюжетный якорь канона.
 6) Конкретика лучше абстракции: жест, предмет, число заряда, запах — вместо «приближаюсь к пониманию» / «ключ к пониманию всего этого».
-7) После правок сверяй: локальный AI-tell (humanStyle) + по возможности Yandex; HUMAN-сегменты отчёта не переписывай.`;
+7) НЕ пиши квест-лог: цепочки «1. … 2. … 3. …», «не найдено: 14», «слово / слово», CW/CCW, NFC латиницей, повтор «обнаружена новая метка». Механику показывай телом (провёл телефоном, ткнул, кольцо поехало), подписи экрана — редко, встроенно в абзац, не таблицей.
+8) Сны/дом: короче и «грязнее» дневника, не отполированная новелла. Стык сон→явь через жест (кроссовки, ключи, %), не через резюме.
+9) Эталон ритма: средняя длина фразы ~8–10 слов; short≤4 слов — меньше ~25% предложений. Не раздувай главу UI-сбором (17 пунктов хуже 4–6 находок).
+10) После правок сверяй: локальный AI-tell (humanStyle, category interface) + при возможности Yandex; HUMAN-сегменты отчёта не переписывай.`;
 
 // Базовые правила человечного письма, добавляются к системной инструкции генерации.
 export function humanStyleDirectives(): string {

@@ -1,0 +1,29 @@
+Яндекс-нейродетектор — гл.7 (2026-07-14, перепись + training local)
+
+ТЕКСТ
+  src/data/labyrinth/chapter-7.txt (~2072 слов)
+  Сюжет: сон (институт-загадка → дом/мама → сон во сне) → NFC/метки через жест
+  (без нумерованного лога 1–17) → ритм пальцев → двойная ладонь → Уровень 2
+
+ЛОКАЛЬНЫЙ AI-tell (humanStyle, после обучения interface/*)
+  score ≈ 6/100  (1 hit: «обнаружена новая метка» — сюжетный якорь)
+  burstiness ≈ 0.61
+  interfaceTellShare низкий (убраны NFC/CW/CCW/«N. текст»)
+
+YANDEX
+  AI% ≈ 82.8  (AI=8 LAI=2 H=2)
+  HUMAN: сбор точек телефоном по кольцам; малый отпечаток/балка
+  Лучше телеграфа (100%), на уровне исторического потолка без rewrite
+
+ОБУЧЕНИЕ ПРИЛОЖЕНИЯ
+  server/humanStyle.ts:
+    - category interface: nfc-eng, cw-ccw, slash-ui-label, ne-najdeno-counter,
+      numbered-log-item, obnaruzhena-metka-spam, ur-level-code, system-breathes
+    - interfaceTellShare() + вклад в aiTellScore
+    - YANDEX_DETECTOR_STYLE: пункты 7–10 (анти-квест-лог, сон, ритм, interface)
+  labyrinthCanon: lr-style-patterns-ch7, обновлены lr-detector-yandex, lr-palm-ch7
+  tests/humanStyle.test.ts: тест interface UI-log
+
+ФАЙЛЫ
+  DOCX: test-artifacts/chapter7/Лабиринт-Глава-7-Отпечаток-ладони-maximum.docx
+  Downloads + Главы/
