@@ -1,13 +1,19 @@
 {
-  "words": 1311,
-  "yaPer100": 13.9,
-  "local": {
-    "score": 11
-  },
+  "words": 1296,
   "yandex": {
-    "aiPct": 72.9,
+    "aiPct": 73.2,
     "HUMAN": 2,
     "AI": 5
   },
-  "strategy": "one-scene: keep base74 diary through palm/slit; cut L2 tour to ch8; less counter spam"
+  "llmRewrite": {
+    "gemini": {
+      "rewritten": 5,
+      "aiPct": 73.5,
+      "accepted": false
+    },
+    "groq": {
+      "rewritten": 0
+    }
+  },
+  "note": "manual AI-segment pass + one-scene structure; LLM rewrite did not beat 73.2"
 }
