@@ -1,19 +1,20 @@
 {
-  "words": 2072,
+  "words": 2111,
   "local": {
-    "score": 6,
-    "burstiness": 0.61,
+    "score": 8,
+    "burstiness": 0.6,
     "hits": [
       "obnaruzhena-metka-spam"
     ]
   },
+  "yaDensityPer100": 12.9,
   "yandex": {
-    "aiPct": 82.8,
+    "aiPct": 74.3,
     "stats": {
       "AI": 8,
-      "LAI": 2,
-      "HUMAN": 2
+      "LAI": 1,
+      "HUMAN": 3
     }
   },
-  "note": "connected prose, less UI log, interface patterns trained"
+  "note": "+я density, opening segment HUMAN"
 }
