@@ -8,7 +8,8 @@ import { computeStyleStats } from "../src/lib/authorAudit";
 // локальная метрика ремесла (штампы, ритм, однообразие), а не «обход детектора».
 //
 // Источники 2025–2026: Wikipedia Signs of AI writing, blader/humanizer, Aboudjem
-// (43 паттерна / 5 voices), harshaneel/humanize (9 levers), русские списки ИИ-штампов.
+// (43 паттерна / 5 voices), harshaneel/humanize (9 levers), smixs/humanizer-ru 1.2
+// (32 русскоязычных паттерна, MIT), русские списки ИИ-штампов.
 
 export type AiTellCategory =
   | "lexical"
@@ -70,6 +71,15 @@ export const AI_TELL_CATALOG: AiTellPattern[] = [
   { id: "osushchestvlyat", category: "bureaucratic", pattern: /осуществл/iu, label: "канцелярское «осуществлять»", weight: 2 },
   { id: "svoego-roda", category: "bureaucratic", pattern: /своего рода/iu, label: "«своего рода»", weight: 1 },
   { id: "nado-otmetit", category: "bureaucratic", pattern: /надо (?:сказать|признать|отметить),? что/iu, label: "«надо сказать, что»", weight: 2 },
+  // — дополнительные кластеры humanizer-ru 1.2; одиночные общеупотребительные слова
+  // имеют малый вес, чтобы не штрафовать живую прозу без соседних AI-признаков
+  { id: "current-day-padding", category: "bureaucratic", pattern: /на сегодняшний день|в настоящее время|на данном этапе|как известно|ни для кого не секрет/iu, label: "пустая временная/общеизвестная вводная", weight: 2 },
+  { id: "vague-attribution", category: "bureaucratic", pattern: /по мнению экспертов|аналитики отмечают|исследователи утверждают|ряд источников указывает|некоторые критики считают/iu, label: "размытая ссылка на неназванных экспертов", weight: 2 },
+  { id: "inflated-significance", category: "bureaucratic", pattern: /знаменует собой (?:ключевой|важный) этап|символизирует приверженность|непреходящее значение|более широкие тенденции|закладывает основу для|знаковый момент|поворотный пункт|неизгладимый след/iu, label: "раздувание значимости", weight: 2 },
+  { id: "challenges-and-prospects", category: "bureaucratic", pattern: /несмотря на (?:эти )?вызовы|сталкивается с (?:целым |широким )?рядом вызовов|вызовы и (?:перспективы|наследие)|перспективы развития/iu, label: "формула «вызовы и перспективы»", weight: 2 },
+  { id: "empty-intensifier", category: "lexical", pattern: /(?:действительно|абсолютно|безусловно|по-настоящему|невероятно) (?:важн|огромн|уникальн|значим|серь[её]зн|глубок)/iu, label: "пустой усилитель перед оценкой", weight: 1 },
+  { id: "technical-jargon", category: "lexical", pattern: /(?:валидир|итерир|оптимизир)[а-яё]* (?:гипотез|решени|процесс|флоу)|(?:скоуп|дефолтн(?:ый|ая|ое)|флоу онбординг|релевантн(?:ый|ая|ое))\b/iu, label: "техножаргон без пояснения", weight: 1 },
+  { id: "pseudo-depth", category: "lexical", pattern: /по сути,? вс[её] упирается|настоящий вопрос в том|глубинн(?:ая|ая же|ую) (?:проблема|готовность|причина)|если копнуть глубже|суть в том,? что|в конечном сч[её]те[^.!?]{0,50}(?:вс[её]|главное|важно)/iu, label: "анонс псевдоглубокого вывода", weight: 2 },
   // — структурные формулы
   { id: "eto-bylo-ne", category: "structural", pattern: /это был[оаи]? не (?:просто )?[^.!?]{3,40}[.,] (?:это|а)\b/iu, label: "зеркальное «это было не X — это Y»", weight: 3 },
   { id: "ritoricheskii-otvet", category: "structural", pattern: /\?\s+(?:Да|Нет|Возможно|Наверное)[,.]/u, label: "риторический вопрос + ответ", weight: 2 },
@@ -77,21 +87,30 @@ export const AI_TELL_CATALOG: AiTellPattern[] = [
   { id: "ne-tolko-no-i", category: "structural", pattern: /не только[^.!?]{0,60}но и/iu, label: "«не только… но и»", weight: 2 },
   { id: "odnako-vs[eё]-zhe", category: "structural", pattern: /однако вс[её] же/iu, label: "«однако всё же»", weight: 1 },
   { id: "vdrug-vnezapno", category: "structural", pattern: /(?:^|[.!?…]\s+|\n\s*)(?:И )?вдруг\b/iu, label: "зачин «Вдруг…»", weight: 2 },
+  { id: "false-range", category: "structural", pattern: /от [^,.!?\n]{2,35} до [^,.!?\n]{2,35},\s*от [^,.!?\n]{2,35} до /iu, label: "шаблонный двойной диапазон «от X до Y»", weight: 2 },
+  { id: "aphorism-formula", category: "structural", pattern: /(?:^|[.!?…]\s+)[А-ЯЁA-Z][^.!?\n]{1,35} (?:—|–|-) (?:это )?(?:язык|валюта|архитектура|зеркало) [^.!?\n]{2,35}[.!?]/u, label: "плакатная формула «X — валюта/язык Y»", weight: 2 },
+  { id: "fragment-stack", category: "structural", pattern: /(?:Без|Никаких|Ноль) [^.!?]{1,30}[.!?]\s+(?:Без|Никаких|Ноль) [^.!?]{1,30}[.!?]\s+(?:Только|Без|Никаких|Ноль)(?=\s|[.!?…]|$)/iu, label: "стопка рубленых отрицательных фрагментов", weight: 2 },
   // — RLHF / «полезный ассистент» в художественной прозе
   { id: "podvodya-itog", category: "rlhf", pattern: /подводя итог|в заключение|резюмируя/iu, label: "итоговое резюме", weight: 3 },
   { id: "vazhno-ponyat", category: "rlhf", pattern: /важно понять|следует понимать|необходимо осознать/iu, label: "«важно понять»", weight: 3 },
   { id: "s-odnoy-storony", category: "rlhf", pattern: /с одной стороны[^.!?]{0,80}с другой/iu, label: "сбалансированное «с одной / с другой»", weight: 3 },
   { id: "takim-obrazom", category: "rlhf", pattern: /(?<![\p{L}\p{N}])таким образом(?![\p{L}\p{N}])/iu, label: "«таким образом»", weight: 2 },
   { id: "imeet-smysl", category: "rlhf", pattern: /имеет смысл (?:отметить|сказать|подчеркнуть)/iu, label: "«имеет смысл отметить»", weight: 2 },
+  { id: "announces-instead-of-acts", category: "rlhf", pattern: /давайте разбер[её]мся|погрузимся в|вот что нужно знать|итак,? начн[её]м|теперь рассмотрим|без лишних слов|перейд[её]м к главному/iu, label: "анонс вместо содержания", weight: 2 },
+  { id: "chatbot-tail", category: "rlhf", pattern: /надеюсь,? (?:это|информация) (?:поможет|была полезн)|дайте знать,? если|буду рад помочь|если у вас есть вопросы|вот краткий обзор|по состоянию на мою последнюю актуализацию/iu, label: "служебный хвост чатбота", weight: 3 },
+  { id: "generic-positive-ending", category: "rlhf", pattern: /будущее выглядит (?:ярким|светлым)|впереди захватывающие времена|путь к совершенству|важный шаг в правильном направлении|продолжает процветать/iu, label: "пустая позитивная концовка", weight: 2 },
+  { id: "speculative-filler", category: "rlhf", pattern: /(?:информация|сведения|подробности) (?:крайне |очень )?(?:ограничен[аы]|мало|неполны)[^.!?]{0,100}(?:вероятно|предположительно|судя по всему)|широко не задокументирован[^.!?]{0,100}(?:вероятно|предположительно)/iu, label: "правдоподобная догадка вместо отсутствующего факта", weight: 3 },
+  { id: "fake-intimacy", category: "rlhf", pattern: /(?:^|[.!?…]\s+)(?:Честно\?|Слушайте,|Скажу прямо,|Давайте начистоту,|Вот в ч[её]м штука[,:]|Если по-честному,)/u, label: "театральная доверительность", weight: 1 },
   // — UI / игровой лог в художественной прозе (Yandex + гл.7 vs эталон гл.6)
   { id: "nfc-eng", category: "interface", pattern: /\bNFC\b/u, label: "английский NFC в прозе", weight: 2 },
   { id: "cw-ccw-eng", category: "interface", pattern: /\b(?:CW|CCW)\b/u, label: "CW/CCW вместо «по/против часовой»", weight: 2 },
   { id: "ur-level-code", category: "interface", pattern: /\bУР\.\s*\d+\b/u, label: "код «УР. N» как UI-штамп (лучше «Уровень N» в речи)", weight: 1 },
   { id: "slash-ui-label", category: "interface", pattern: /[а-яёa-z]{2,}\s*\/\s*[а-яёa-z]{2,}/iu, label: "UI-метка «слово / слово»", weight: 1 },
   { id: "ne-najdeno-counter", category: "interface", pattern: /не найдено\s*[:—–-]?\s*\d+/iu, label: "счётчик «не найдено: N»", weight: 2 },
-  { id: "numbered-log-item", category: "interface", pattern: /(?:^|[\n.!?…]\s*)\d{1,2}\.\s+[«"«]?[а-яёa-z]/imu, label: "нумерованный лог «1. текст»", weight: 1 },
+  { id: "numbered-log-item", category: "interface", pattern: /(?:^|[\n.!?…]\s*)\d{1,2}\.\s+[«"“]?[а-яёa-z][^]{0,180}?(?:^|[\n.!?…]\s*)\d{1,2}\.\s+[«"“]?[а-яёa-z]/imu, label: "серия нумерованного лога «1. текст; 2. текст»", weight: 1 },
   { id: "obnaruzhena-metka-spam", category: "interface", pattern: /обнаружена новая метка/iu, label: "повтор UI-строки «обнаружена новая метка»", weight: 1 },
   { id: "system-breathes", category: "interface", pattern: /система дышит/iu, label: "штамп «система дышит»", weight: 2 },
+  { id: "code-notation", category: "interface", pattern: /(?:^|\s)(?:[А-ЯЁA-Z][\p{L}\p{N}_-]*\s*)?(?:→|←|⇒|>=|<=|!=|\bvs\b|\s&\s)(?:\s*[А-ЯЁA-Z\p{N}])/iu, label: "кодовая/математическая нотация в обычной фразе", weight: 1 },
 ];
 
 export interface AiTellHit {
@@ -179,7 +198,12 @@ export function aiTellScore(text: string): AiTellScore {
   // Составляющие: штампы (до 50), UI-лог (до 15), ровный ритм (до 25), однообразные зачины (до 10).
   const patternComponent = Math.min(patternDensity * 4, 50);
   const interfaceComponent = Math.min(interfaceShare * 4000, 15);
-  const rhythmComponent = burstiness >= 0.55 ? 0 : Math.min(((0.55 - burstiness) / 0.55) * 25, 25);
+  // 0.50 — нижняя граница живого коридора после калибровки по авторской главе 1.
+  // Более высокий порог ошибочно штрафовал короткие бытовые сцены того же автора.
+  const rhythmFloor = 0.5;
+  const rhythmComponent = burstiness >= rhythmFloor
+    ? 0
+    : Math.min(((rhythmFloor - burstiness) / rhythmFloor) * 25, 25);
   const openerComponent = Math.min(openerRepetition * 50, 10);
   const score = Math.round(
     Math.min(patternComponent + interfaceComponent + rhythmComponent + openerComponent, 100),
@@ -436,6 +460,9 @@ export function humanStyleDirectives(): string {
 12. Если дан авторский образец, его степень простоты и шероховатости — норма. Не заменяй прямую бытовую фразу «более литературным» синонимом и не добавляй украшения, которых автор обычно не использует.
 13. Не пиши как «полезный ассистент»: без лекций читателю, без «с одной стороны / с другой», без «важно понять», без подведения итогов в конце сцены.
 14. От 1 лица: сохраняй «я» как естественную опору повествования (умеренно). Полное вычищение «я» и сплошной телеграф — вредны и для голоса, и для нейродетектора.
+15. Режь воду, а не фактуру: сохраняй факты, цифры, странные конкретные детали, смешанные чувства, отступления и самопоправки. Оценку по возможности меняй на наблюдаемый факт, но не выдумывай его.
+16. Ищи сочетания признаков, а не одиночное слово. Одно «однако», тире или вопрос в русской прозе ничего не доказывает; не переписывай чистый абзац ради стерильности.
+17. Не анонсируй мысль («давайте разберёмся», «настоящий вопрос в том») и не заполняй неизвестное правдоподобной догадкой. Сразу показывай действие/факт либо честно оставляй пробел.
 ${YANDEX_DETECTOR_STYLE}
 ${NINE_LEVERS}
 ${NEGATIVE_EXAMPLES}`;

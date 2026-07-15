@@ -66,6 +66,11 @@ test("interface UI-log patterns are flagged (ch7 vs ch6 lesson)", () => {
   assert.ok(aiTellScore(uiLog).score > aiTellScore(body).score);
 });
 
+test("a single numbered chapter heading is not mistaken for a UI log", () => {
+  const chapter = "Лабиринт.\n1.\nЯрчайшая вспышка! И далее темнота. Это последнее, что помню.";
+  assert.ok(!detectAiTells(chapter).some((hit) => hit.id === "numbered-log-item"));
+});
+
 test("bureaucratic language is flagged", () => {
   const hits = detectAiTells("Данный лес является местом силы и представляет собой аномалию.");
   const categories = new Set(hits.map((hit) => hit.category));
@@ -153,6 +158,34 @@ test("RLHF and new structural patterns are flagged", () => {
   assert.ok(ids.includes("vazhno-ponyat"));
   assert.ok(ids.includes("s-odnoy-storony"));
   assert.ok(ids.includes("podvodya-itog"));
+});
+
+test("humanizer-ru 1.2 clusters are detected without banning normal Russian punctuation", () => {
+  const text = [
+    "Давайте разберёмся, почему это знаменует собой ключевой этап.",
+    "По мнению экспертов, будущее выглядит ярким.",
+    "Информация ограничена, но, вероятно, он вырос в семье среднего класса.",
+    "Внимание — валюта нового века.",
+    "Без симметрии. Без эстетики. Только результат.",
+  ].join(" ");
+  const ids = new Set(detectAiTells(text).map((hit) => hit.id));
+  assert.ok(ids.has("announces-instead-of-acts"));
+  assert.ok(ids.has("inflated-significance"));
+  assert.ok(ids.has("vague-attribution"));
+  assert.ok(ids.has("generic-positive-ending"));
+  assert.ok(ids.has("speculative-filler"));
+  assert.ok(ids.has("aphorism-formula"));
+  assert.ok(ids.has("fragment-stack"));
+
+  const natural = detectAiTells("— Ты придёшь? — спросила Лена. Я не знал. Наверное, да.");
+  assert.equal(natural.length, 0, "диалоговое тире и обычный вопрос не должны считаться AI-признаком");
+});
+
+test("human style guidance preserves factual texture and uses clustered evidence", () => {
+  const guidance = humanStyleDirectives();
+  assert.match(guidance, /Режь воду, а не фактуру/);
+  assert.match(guidance, /сочетания признаков/);
+  assert.match(guidance, /не выдумывай/);
 });
 
 test("flagBlocksForTouchup ranks dirty paragraphs first and respects limit", () => {
