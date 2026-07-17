@@ -18,6 +18,25 @@ export interface StyleSignal {
   severity: "note" | "warning";
 }
 
+export type CalibratedStyleMetric =
+  | "averageSentenceWords"
+  | "sentenceLengthDeviation"
+  | "shortSentenceShare"
+  | "exclamationsPerThousandWords"
+  | "ellipsesPerThousandWords"
+  | "dialogueLineShare"
+  | "particlesPerThousandWords"
+  | "similesPerThousandWords";
+
+export interface CalibratedStyleResult {
+  expected: StyleStats;
+  actual: StyleStats;
+  /** 100 = совпадение с подтверждённым человеческим эталоном по измеримому голосу. */
+  similarity: number;
+  metricScores: Record<CalibratedStyleMetric, number>;
+  weakestMetrics: CalibratedStyleMetric[];
+}
+
 const PARTICLES = new Set(["же", "ведь", "вот", "ну", "однако", "чтож"]);
 const AI_PHRASES = [
   "не просто",
@@ -141,13 +160,10 @@ export function auditStyleSignals(text: string): StyleSignal[] {
   return signals;
 }
 
-export function compareStyle(reference: string, candidate: string) {
+export function compareStyle(reference: string, candidate: string): CalibratedStyleResult {
   const expected = computeStyleStats(reference);
   const actual = computeStyleStats(candidate);
-  const fields: Array<keyof Pick<StyleStats,
-    "averageSentenceWords" | "sentenceLengthDeviation" | "shortSentenceShare" |
-    "exclamationsPerThousandWords" | "ellipsesPerThousandWords" |
-    "dialogueLineShare" | "particlesPerThousandWords" | "similesPerThousandWords">> = [
+  const fields: CalibratedStyleMetric[] = [
       "averageSentenceWords",
       "sentenceLengthDeviation",
       "shortSentenceShare",
@@ -155,14 +171,34 @@ export function compareStyle(reference: string, candidate: string) {
       "ellipsesPerThousandWords",
       "dialogueLineShare",
       "particlesPerThousandWords",
-      "similesPerThousandWords",
-    ];
+    "similesPerThousandWords",
+  ];
+  // Статистика одного и того же живого автора заметно плавает от сцены к сцене.
+  // Сравниваем не с точкой, а с коридором вокруг подтверждённого HUMAN-эталона.
+  const tolerance: Record<CalibratedStyleMetric, number> = {
+    averageSentenceWords: 0.2,
+    sentenceLengthDeviation: 0.35,
+    shortSentenceShare: 0.4,
+    exclamationsPerThousandWords: 0.2,
+    ellipsesPerThousandWords: 0.4,
+    dialogueLineShare: 0.25,
+    particlesPerThousandWords: 0.2,
+    similesPerThousandWords: 0.2,
+  };
   const deviations = fields.map((field) => {
     const baseline = Math.max(Math.abs(expected[field]), field.includes("Share") ? 0.05 : 1);
-    return Math.min(1, Math.abs(actual[field] - expected[field]) / baseline);
+    const raw = Math.abs(actual[field] - expected[field]) / baseline;
+    const allowed = tolerance[field];
+    return Math.min(1, Math.max(0, raw - allowed) / (1 - allowed));
   });
+  const metricScores = Object.fromEntries(
+    fields.map((field, index) => [field, Math.round(100 * (1 - deviations[index]))]),
+  ) as Record<CalibratedStyleMetric, number>;
   const similarity = Math.round(100 * (1 - deviations.reduce((sum, value) => sum + value, 0) / deviations.length));
-  return { expected, actual, similarity };
+  const weakestMetrics = [...fields]
+    .sort((left, right) => metricScores[left] - metricScores[right])
+    .slice(0, 3);
+  return { expected, actual, similarity, metricScores, weakestMetrics };
 }
 
 export function hashText(text: string): string {

@@ -176,6 +176,10 @@ export function buildPersonaAndStyle(
   return { personaBlock, styleBlock, fewShots, statsBlock };
 }
 
+/** Хвост previous для плана/сцен: достаточно фактов, без раздува токенов free-лимитов. */
+export const PREVIOUS_TAIL_BEAT_CHARS = 2800;
+export const PREVIOUS_TAIL_SCENE_CHARS = 900;
+
 export function buildBeatPlanPrompt(input: ChapterGenerateInput): string {
   return `Составь 5–7 сюжетных битов (сцен) для полноценной главы (~1800–2800 слов суммарно). Без прозы, только план. Все поля JSON — строго на русском языке.
 
@@ -183,8 +187,8 @@ export function buildBeatPlanPrompt(input: ChapterGenerateInput): string {
 Синопсис: ${input.currentChapterSummary || "не задан"}
 Книга: «${input.title}» (${input.genre || "жанр не указан"})
 
-${input.canonDossier ? `Замок канона:\n${input.canonDossier.slice(0, 4000)}\n` : ""}
-${input.previousChapter ? `Хвост предыдущей главы (для стыка):\n"""\n${input.previousChapter.slice(-1500)}\n"""\n` : ""}
+${input.canonDossier ? `Замок канона:\n${input.canonDossier.slice(0, 5500)}\n` : ""}
+${input.previousChapter ? `Хвост предыдущей главы (для стыка — продолжай С ЭТОГО состояния, не переигрывай прошлую главу):\n"""\n${input.previousChapter.slice(-PREVIOUS_TAIL_BEAT_CHARS)}\n"""\n` : ""}
 ${input.customPrompt ? `Пожелания автора: ${input.customPrompt}\n` : ""}
 
 Требования:
@@ -192,6 +196,7 @@ ${input.customPrompt ? `Пожелания автора: ${input.customPrompt}\n
 - Каждый бит — одно законченное событие/решение; биты НЕ дублируют друг друга.
 - hook у каждого бита разный (не повторять «ключ/заряд/темнота» во всех).
 - hook — конкретный предмет, число, ощущение или действие, не абстракция.
+- СТРОГО по синопсису ЭТОЙ главы. Не пересказывай сюжет предыдущей (кольца «Число 20», повторная еда/заряд с нуля, если это уже было).
 - Не добавляй персонажей, технологий и локаций вне канона.
 - Никаких английских слов в title/goal/hook/endsWith.
 - Верни JSON по схеме.`;
@@ -229,17 +234,17 @@ ${antiRepeatNotes ? `ЗАПРЕТ ПОВТОРОВ (уже было в пред�
 
 Канон и контекст:
 - Синопсис главы: ${input.currentChapterSummary || "—"}
-${input.canonDossier ? `- Замок канона (фрагмент): ${input.canonDossier.slice(0, 2500)}` : ""}
+${input.canonDossier ? `- Замок канона (фрагмент): ${input.canonDossier.slice(0, 3500)}` : ""}
 ${input.worldBible ? `- Библия мира (фрагмент): ${input.worldBible.slice(0, 2000)}` : ""}
 
 ${styleExtras}
 
 Требования:
 1. Только текст прозы на русском, без заголовка бита, без Markdown, без комментариев, без английского.
-2. Сохрани POV и факты канона. Не вводи новые сущности.
+2. Сохрани POV и факты канона. Не вводи новые сущности. Не откатывай заряд/сытость/уровень из стыка.
 3. Не используй генеративные штампы и «голос ассистента».
 4. Закончи на действии/состоянии из endsWith, без морали и резюме.
-5. Продвинь сюжет: новое действие/поворот, а не повтор «шёл, считал, смотрел на заряд».
+5. Продвинь сюжет: новое действие/поворот, а не повтор «шёл, считал, смотрел на заряд» и не переигровка колец гл.6.
 6. Чередуй длину фраз (очень короткие рядом с длинными) — избегай ровного «ИИ-ритма».
 7. Минимум 350 слов в этом фрагменте.`;
 }
@@ -281,7 +286,7 @@ export function buildSingleChapterPrompt(input: ChapterGenerateInput, styleExtra
 - Синопсис: ${input.currentChapterSummary || "Без описания"}
 
 ${input.canonDossier ? `ЗАМОК КАНОНА:\n"""\n${input.canonDossier}\n"""\n` : ""}
-${input.previousChapter ? `ПРЕДЫДУЩАЯ ГЛАВА:\n"""\n${input.previousChapter}\n"""\n` : "Это первая глава книги.\n"}
+${input.previousChapter ? `ПРЕДЫДУЩАЯ ГЛАВА (продолжай с её финала; не переигрывай её сюжет):\n"""\n${input.previousChapter}\n"""\n` : "Это первая глава книги.\n"}
 ${input.worldBible ? `БИБЛИЯ МИРА:\n"""\n${input.worldBible}\n"""\n` : ""}
 ${input.bookPlan ? `ПЛАН КНИГИ:\n"""\n${input.bookPlan}\n"""\n` : ""}
 ${input.customPrompt ? `ПОЖЕЛАНИЯ АВТОРА:\n"""\n${input.customPrompt}\n"""\n` : ""}
@@ -290,10 +295,11 @@ ${styleExtras}
 
 ТРЕБОВАНИЯ:
 1. Полноценная глава ~1800–2800 слов; остановись, когда выполнено событие синопсиса. Не обрывай на полпути.
-2. Строго соблюдай лор и канон. Ограниченное восприятие героя.
+2. Строго соблюдай лор и канон. Ограниченное восприятие героя. Не откатывай заряд/сытость/локацию из предыдущей главы.
 3. Не «улучшай» голос до стандартной литературной прозы.
 4. Только русский язык: без английских слов и латиницы.
-5. Выведи ТОЛЬКО текст главы без заголовка, вступления и Markdown.`;
+5. Не повторяй сюжет уже закрытых глав (например кольца «Число 20»), если синопсис этого не требует.
+6. Выведи ТОЛЬКО текст главы без заголовка, вступления и Markdown.`;
 }
 
 export function buildChapterSystemInstruction(personaBlock: string, statsBlock: string): string {
@@ -510,51 +516,206 @@ function rhythmOnlyIssues(block: string): string[] {
   return rhythmIssues(block);
 }
 
-/** Запасной план, если JSON-бит-план не распарсился (NVIDIA часто ломает schema). */
-function fallbackBeatsFromSynopsis(input: ChapterGenerateInput): ChapterBeat[] {
+function chapterNumberFromTitle(title: string): number | null {
+  const match =
+    title.match(/(?:глава|chapter)\s*(\d+)/iu) ||
+    title.match(/^\s*(\d{1,2})\s*[.:)\-–—]/u);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function withSynopsisGoals(beats: ChapterBeat[], summary: string): ChapterBeat[] {
+  const clip = summary.slice(0, 320);
+  return beats.map((beat) => ({
+    ...beat,
+    goal: `${beat.goal} Опора на синопсис: ${clip}`,
+  }));
+}
+
+/** Запасной план гл.6 — только если JSON-бит-план упал И глава про «Число 20». */
+function fallbackBeatsChapter6(title: string, summary: string): ChapterBeat[] {
+  return withSynopsisGoals(
+    [
+      {
+        title: "Спуск",
+        goal: `Герой продолжает путь после предыдущей главы к месту из синопсиса «${title}».`,
+        hook: "пандус, темнота, слабое свечение впереди",
+        endsWith: "подходит ближе к источнику света",
+      },
+      {
+        title: "Тупик",
+        goal: "Обнаружить замкнутое пространство и странный объект из синопсиса.",
+        hook: "зеленоватое число или метка в воздухе",
+        endsWith: "понимает, что это не случайность",
+      },
+      {
+        title: "Ресурс",
+        goal: "Найти питательную массу / ёмкость; проверить безопасно.",
+        hook: "дымчатая ёмкость, мятно-медовый запах",
+        endsWith: "решается попробовать",
+      },
+      {
+        title: "Еда",
+        goal: "Поесть; голод и жажда отступают; телесные ощущения.",
+        hook: "вкус, густота, тепло в животе",
+        endsWith: "силы чуть возвращаются",
+      },
+      {
+        title: "Заряд",
+        goal: "Положить телефон; беспроводная зарядка; число тает; процент заряда.",
+        hook: "телефон, процент, тающее число",
+        endsWith: "заряд около двадцати процентов",
+      },
+      {
+        title: "Отпечаток",
+        goal: "Заметить смутный отпечаток ладони на стене; решение отложить активацию.",
+        hook: "отпечаток ладони на стене",
+        endsWith: "не сейчас — займётся, когда будет готов",
+      },
+    ],
+    summary,
+  );
+}
+
+function fallbackBeatsChapter7(summary: string): ChapterBeat[] {
+  return withSynopsisGoals(
+    [
+      {
+        title: "Отдых",
+        goal: "Сидит у стены после ресурса: ~20%, сытость, кольца остыли; смотрит на отпечаток, не активирует сразу.",
+        hook: "двадцать процентов, усталость ног, тёплая стена",
+        endsWith: "закрывает глаза — только сесть, не спать",
+      },
+      {
+        title: "Сон-институт",
+        goal: "Сон: аудитория, формула на доске, дверь не пускает, пока не «сдаст».",
+        hook: "доска, формула, тёплая дверь",
+        endsWith: "дверь щёлкает — «сдал»",
+      },
+      {
+        title: "Сон-дом",
+        goal: "За дверью дом/мама/суп/зачёт; вкус мяты остаётся; ощущение сна во сне.",
+        hook: "подъезд, суп, голос мамы",
+        endsWith: "засыпает «дома» и проваливается",
+      },
+      {
+        title: "Явь",
+        goal: "Просыпается в тупике; 20%, ключи, пыль; решает подойти к отпечатку.",
+        hook: "кольцо перед носом, заряд на экране",
+        endsWith: "идёт к отпечатку",
+      },
+      {
+        title: "Точки",
+        goal: "Телефон к отпечатку; точки у колец/чаши/стены жестом, без нумерованного лога; ошибка ритма.",
+        hook: "вибрация телефона, точки, ритм пальцев",
+        endsWith: "ловит верный ритм",
+      },
+      {
+        title: "Щель",
+        goal: "Двойная ладонь (янтарь), щель, вход на Уровень 2; шаг; крючок без карты.",
+        hook: "янтарная ладонь, холод из щели, надпись уровня",
+        endsWith: "шаг в коридор Уровня 2",
+      },
+    ],
+    summary,
+  );
+}
+
+function fallbackBeatsChapter8(summary: string): ChapterBeat[] {
+  return withSynopsisGoals(
+    [
+      {
+        title: "После щели",
+        goal: "Уже на Уровне 2: зелёные риски, пол твёрже; ~20%; без отката к ладони/кольцам.",
+        hook: "зелёные риски на стенах, закрывшийся проход",
+        endsWith: "выбирает направление по рискам",
+      },
+      {
+        title: "Метки",
+        goal: "Первые метки ключом/телефоном; счётчик или статус шагов появляется осторожно.",
+        hook: "синяя царапина, вибрация, число шагов",
+        endsWith: "понимает, что система считает",
+      },
+      {
+        title: "Развилка",
+        goal: "Развилка; карта или зачатки карты; датчики (магнит/давление) намеком.",
+        hook: "два коридора, пиктограмма карты, странный отклик телефона",
+        endsWith: "выбирает путь и идёт",
+      },
+      {
+        title: "Диск",
+        goal: "Диск-якорь или узел; не путать с числом 20 с Ур.1.",
+        hook: "дымчатый диск, якорь, короткое обновление экрана",
+        endsWith: "закрепляет точку на «карте»",
+      },
+      {
+        title: "Датчики",
+        goal: "Осмыслить новые показания (шаги/статус); не UI-лог списком.",
+        hook: "строка статуса, шаги, давление/магнит намёком",
+        endsWith: "пользуется одним датчиком для решения",
+      },
+      {
+        title: "Крючок",
+        goal: "Осознание пропущенного / скрытой закладки впереди; крючок на гл.9.",
+        hook: "пустой слот на карте, чужая метка, недосказанность",
+        endsWith: "идёт дальше с вопросом, что пропустил",
+      },
+    ],
+    summary,
+  );
+}
+
+/** Универсальный план из синопсиса — НЕ сюжет «Число 20». */
+function fallbackBeatsGeneric(title: string, summary: string): ChapterBeat[] {
+  const clauses = summary
+    .split(/[.;!?…]+/u)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 12)
+    .slice(0, 6);
+  while (clauses.length < 6) {
+    clauses.push(`Развитие сцены «${title}» по синопсису, шаг ${clauses.length + 1}`);
+  }
+  const hooks = [
+    "конкретный жест героя",
+    "звук или запах пространства",
+    "реакция телефона или метки",
+    "выбор направления",
+    "телесная деталь усталости",
+    "новый факт о правиле мира",
+  ];
+  return withSynopsisGoals(
+    clauses.map((clause, index) => ({
+      title: `Бит ${index + 1}`,
+      goal: clause,
+      hook: hooks[index % hooks.length],
+      endsWith: index === clauses.length - 1
+        ? "сцена закрыта крючком на продолжение"
+        : "состояние меняется, сюжет идёт вперёд",
+    })),
+    summary,
+  );
+}
+
+/**
+ * Запасной план, если JSON-бит-план не распарсился (NVIDIA часто ломает schema).
+ * ВАЖНО: не подставлять сюжет гл.6 для гл.7/8 — иначе «не канон».
+ */
+export function fallbackBeatsFromSynopsis(input: ChapterGenerateInput): ChapterBeat[] {
   const title = input.currentChapterTitle || "Глава";
   const summary = input.currentChapterSummary || input.customPrompt || "события главы";
-  return [
-    {
-      title: "Спуск",
-      goal: `Герой продолжает путь после предыдущей главы к месту из синопсиса «${title}».`,
-      hook: "пандус, темнота, слабое свечение впереди",
-      endsWith: "подходит ближе к источнику света",
-    },
-    {
-      title: "Тупик",
-      goal: "Обнаружить замкнутое пространство и странный объект из синопсиса.",
-      hook: "зеленоватое число или метка в воздухе",
-      endsWith: "понимает, что это не случайность",
-    },
-    {
-      title: "Ресурс",
-      goal: "Найти питательную массу / ёмкость; проверить безопасно.",
-      hook: "дымчатая ёмкость, мятно-медовый запах",
-      endsWith: "решается попробовать",
-    },
-    {
-      title: "Еда",
-      goal: "Поесть; голод и жажда отступают; телесные ощущения.",
-      hook: "вкус, густота, тепло в животе",
-      endsWith: "силы чуть возвращаются",
-    },
-    {
-      title: "Заряд",
-      goal: "Положить телефон; беспроводная зарядка; число тает; процент заряда.",
-      hook: "телефон, процент, тающее число",
-      endsWith: "заряд около двадцати процентов",
-    },
-    {
-      title: "Отпечаток",
-      goal: "Заметить смутный отпечаток ладони на стене; решение что делать дальше.",
-      hook: "отпечаток ладони на стене",
-      endsWith: "тянется рукой или решает идти к следующему уровню",
-    },
-  ].map((beat) => ({
-    ...beat,
-    goal: `${beat.goal} Опора на синопсис: ${summary.slice(0, 280)}`,
-  }));
+  const n = chapterNumberFromTitle(title);
+
+  if (n === 6 || /число\s*20/i.test(title)) {
+    return fallbackBeatsChapter6(title, summary);
+  }
+  if (n === 7 || /отпечаток\s+ладони/i.test(title)) {
+    return fallbackBeatsChapter7(summary);
+  }
+  if (n === 8 || /уровень\s*2/i.test(title)) {
+    return fallbackBeatsChapter8(summary);
+  }
+  return fallbackBeatsGeneric(title, summary);
 }
 
 async function planBeats(
@@ -599,7 +760,7 @@ async function generateScenesDraft(
   candidateIndex: number,
 ): Promise<{ draft: string; scenesGenerated: number }> {
   const scenes: string[] = [];
-  let tail = input.previousChapter ? input.previousChapter.slice(-500) : "";
+  let tail = input.previousChapter ? input.previousChapter.slice(-PREVIOUS_TAIL_SCENE_CHARS) : "";
   const tempBoost = candidateIndex * 0.06;
   for (let index = 0; index < beats.length; index += 1) {
     const sceneStyle = sample.length >= 300
@@ -649,7 +810,7 @@ async function generateScenesDraft(
       break;
     }
     scenes.push(cleaned);
-    tail = cleaned.slice(-500);
+    tail = cleaned.slice(-PREVIOUS_TAIL_SCENE_CHARS);
   }
   return { draft: scenes.join("\n\n"), scenesGenerated: scenes.length };
 }

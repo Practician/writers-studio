@@ -50,19 +50,20 @@ export const AI_TELL_CATALOG: AiTellPattern[] = [
   // — телесно-эмоциональные штампы генеративной прозы
   { id: "kholodok-po-spine", category: "sensational", pattern: /холодок (?:пробежал|скользнул) по спине|по спине пробежал холодок/iu, label: "«холодок по спине»", weight: 3 },
   { id: "serdtse-propustilo", category: "sensational", pattern: /сердце пропустило удар/iu, label: "«сердце пропустило удар»", weight: 3 },
-  { id: "vozdukh-sgustilsya", category: "sensational", pattern: /воздух (?:сгустился|застыл|зазвенел)/iu, label: "«воздух сгустился»", weight: 3 },
-  { id: "vremya-zamerlo", category: "sensational", pattern: /время (?:словно |будто |как будто )?(?:остановилось|замерло|застыло)/iu, label: "«время остановилось»", weight: 3 },
+  { id: "vozdukh-sgustilsya", category: "sensational", pattern: /воздух (?:сгустился|застыл|зазвенел|был (?:густым|плотным)(?: от [^.!?]{2,24})?)/iu, label: "абстрактно олицетворённый воздух", weight: 3 },
+  { id: "vremya-zamerlo", category: "sensational", pattern: /время (?:словно |будто |как будто )?(?:остановилось|замерло|застыло|казалось замершим)/iu, label: "«время остановилось»", weight: 3 },
   { id: "grobovaya-tishina", category: "sensational", pattern: /(?:повисла|воцарилась) (?:гробовая |звенящая )?тишина/iu, label: "«повисла тишина»", weight: 2 },
   { id: "vnutri-szhalos", category: "sensational", pattern: /внутри (?:вс[её] |что-то )?(?:сжалось|оборвалось|похолодело)/iu, label: "«внутри всё сжалось»", weight: 2 },
   { id: "volna-chuvstva", category: "sensational", pattern: /волна (?:страха|ужаса|паники|облегчения|гнева|ярости|тепла) (?:накрыла|захлестнула|окатила|прокатилась)/iu, label: "«волна чувства накрыла»", weight: 3 },
   { id: "ledyanoi-uzhas", category: "sensational", pattern: /ледян(?:ой|ым|ого) ужас/iu, label: "«ледяной ужас»", weight: 2 },
   { id: "chto-to-neulovimoe", category: "sensational", pattern: /что-то неуловим/iu, label: "«что-то неуловимое»", weight: 2 },
   { id: "sam-vozdukh", category: "sensational", pattern: /казалось, сам(?:а|о)? (?:воздух|земля|время|пространство)/iu, label: "«казалось, сам воздух…»", weight: 3 },
-  { id: "strannoe-chuvstvo", category: "sensational", pattern: /странное (?:чувство|ощущение) (?:охватило|наполнило|не покидало)/iu, label: "«странное чувство охватило»", weight: 2 },
+  { id: "strannoe-chuvstvo", category: "sensational", pattern: /(?:странное (?:чувство|ощущение) (?:охватило|наполнило|не покидало)|внутри (?:меня )?(?:оставалось|осталось) странное (?:чувство|ощущение))/iu, label: "названное, но не показанное «странное чувство»", weight: 2 },
   { id: "tishina-davila", category: "sensational", pattern: /тишина (?:давила|нависала|обволакивала|поглотила)/iu, label: "олицетворённая тишина", weight: 2 },
   { id: "temnota-osyaz", category: "sensational", pattern: /темнота (?:была |казалась )?(?:осязаем|плотной|густой)/iu, label: "«осязаемая темнота»", weight: 1 },
   // — канцелярит и вводные-паразиты
   { id: "v-sovremennom-mire", category: "bureaucratic", pattern: /в современном мире/iu, label: "«в современном мире»", weight: 3 },
+  { id: "impossible-here-contrast", category: "structural", pattern: /(?:в (?:этом|обычном|современном) мире|обычно) [^.!?]{0,80}(?:казал(?:ось|ись)|каж(?:ется|утся)) невозможн[^.!?]*[.!?]\s+(?:Но |Однако )?здесь вс[ёе] (?:было |оказалось )?(?:иначе|по-другому)/iu, label: "универсальная связка «в мире невозможно, но здесь иначе»", weight: 3 },
   { id: "ne-sekret", category: "bureaucratic", pattern: /не секрет,? что/iu, label: "«не секрет, что»", weight: 3 },
   { id: "stoit-otmetit", category: "bureaucratic", pattern: /(?:стоит|важно|следует) отметить/iu, label: "«стоит отметить»", weight: 3 },
   { id: "yavlyaetsya", category: "bureaucratic", pattern: /являет(?:ся|сь)/iu, label: "канцелярское «является»", weight: 1 },
@@ -93,6 +94,8 @@ export const AI_TELL_CATALOG: AiTellPattern[] = [
   // — RLHF / «полезный ассистент» в художественной прозе
   { id: "podvodya-itog", category: "rlhf", pattern: /подводя итог|в заключение|резюмируя/iu, label: "итоговое резюме", weight: 3 },
   { id: "vazhno-ponyat", category: "rlhf", pattern: /важно понять|следует понимать|необходимо осознать/iu, label: "«важно понять»", weight: 3 },
+  { id: "meta-realization", category: "rlhf", pattern: /в (?:своих )?мыслях я осознал|я (?:вдруг )?(?:понял|осознал),? что [^.!?]{0,55}(?:должно|значит|важно)/iu, label: "объявление осознания вместо мысли/действия", weight: 2 },
+  { id: "forced-meaning", category: "rlhf", pattern: /(?:это|совпадение|оно) (?:должно|должен|должна) был(?:о|[аи])? значить|это был знак/iu, label: "принудительное объяснение «это должно что-то значить»", weight: 2 },
   { id: "s-odnoy-storony", category: "rlhf", pattern: /с одной стороны[^.!?]{0,80}с другой/iu, label: "сбалансированное «с одной / с другой»", weight: 3 },
   { id: "takim-obrazom", category: "rlhf", pattern: /(?<![\p{L}\p{N}])таким образом(?![\p{L}\p{N}])/iu, label: "«таким образом»", weight: 2 },
   { id: "imeet-smysl", category: "rlhf", pattern: /имеет смысл (?:отметить|сказать|подчеркнуть)/iu, label: "«имеет смысл отметить»", weight: 2 },
@@ -111,7 +114,53 @@ export const AI_TELL_CATALOG: AiTellPattern[] = [
   { id: "obnaruzhena-metka-spam", category: "interface", pattern: /обнаружена новая метка/iu, label: "повтор UI-строки «обнаружена новая метка»", weight: 1 },
   { id: "system-breathes", category: "interface", pattern: /система дышит/iu, label: "штамп «система дышит»", weight: 2 },
   { id: "code-notation", category: "interface", pattern: /(?:^|\s)(?:[А-ЯЁA-Z][\p{L}\p{N}_-]*\s*)?(?:→|←|⇒|>=|<=|!=|\bvs\b|\s&\s)(?:\s*[А-ЯЁA-Z\p{N}])/iu, label: "кодовая/математическая нотация в обычной фразе", weight: 1 },
+  // — структурные AI-маркеры (live Yandex 2026-07: ~70% AI-сегментов без «классических» штампов)
+  { id: "status-colon-ui", category: "interface", pattern: /статус\s*:/iu, label: "UI «статус:» в прозе", weight: 2 },
+  { id: "steps-colon-ui", category: "interface", pattern: /шаги\s*[:—–-]/iu, label: "UI «шаги:» / «шаги —»", weight: 2 },
+  { id: "map-usik", category: "interface", pattern: /усик(?:и|ов|ами)?/iu, label: "квест-жаргон «усик» карты", weight: 1 },
+  // только «на линии-карте», не любое «на линии» (ложные срабатывания на гл.6)
+  { id: "on-line-map", category: "interface", pattern: /на\s+линии-карт/iu, label: "«на линии-карте» как UI-якорь", weight: 1 },
+  // два инвентарных факта подряд (типичный AI-обход локации)
+  { id: "space-inventory", category: "structural", pattern: /(?:Пол\s+(?:твёрже|тверже|влажн)[^.!?]{0,20}[.!?]\s*(?:Стены|Риски)|Стены\s+гладк[^.!?]{0,20}[.!?]\s*(?:Пол|Риски)|Риски\s+(?:шли|сгуст|разошл)[^.!?]{0,40}[.!?]\s*(?:Пол|Стены|Достал))/iu, label: "инвентарь локации «Пол/Стены/Риски…» подряд", weight: 2 },
+  { id: "one-word-sentence", category: "structural", pattern: /(?:^|[.!?…]\s+)(?:Сел|Встал|Пошёл|Пошел|Шагнул|Снял|Кивнул)\.(?=\s|$)/gu, label: "однословные рубленые фразы «Сел. Встал.»", weight: 2 },
+  { id: "day-summary-loop", category: "structural", pattern: /День\s+тянулся|стол,\s*кухня,\s*снова\s+стол|от\s+стола\s+к\s+кухне/iu, label: "summary дня «стол–кухня–стол»", weight: 2 },
+  // только очень короткие фразы (≤~3–4 слова / 18 символов тела)
+  { id: "triple-staccato", category: "structural", pattern: /(?:^|[.!?…]\s+)[А-ЯЁA-Z][^.!?\n]{0,18}[.!?]\s+[А-ЯЁA-Z][^.!?\n]{0,18}[.!?]\s+[А-ЯЁA-Z][^.!?\n]{0,18}[.!?]/u, label: "три очень короткие фразы подряд (стаккато)", weight: 1 },
+  { id: "anti-ui-meta", category: "interface", pattern: /не\s+список\.?\s*не\s+таблица|хватит\s+квест-лог/iu, label: "мета про «не UI» (сама выдает квест-тон)", weight: 1 },
 ];
+
+/**
+ * Почему локальный детектор ≠ 100% Яндекса (и не может гарантировать 0% AI на тексте).
+ * Показывается в UI / доках; паттерны ниже — попытка закрыть главные дыры.
+ */
+export const YANDEX_LOCAL_GAP = {
+  version: 2,
+  calibratedOn: "test-artifacts Yandex reports + live 2026-07 (ch1/6/7/8)",
+  // live analysis: 108 HUMAN + 161 AI segments; after structural v2 miss ~31%
+  stats: {
+    yandexAiWithLowLocalTellBefore: 0.7,
+    /** После structural v2 + смягчения FP на гл.1/6. */
+    yandexAiWithLowLocalTellAfter: 0.47,
+    looAccuracyApprox: 0.80,
+    ch1Ch6YandexAiPct: 0,
+    ch7YandexAiPct: 0.277,
+    ch8YandexAiPct: 1.0,
+  },
+  reasonsNot100: [
+    "Яндекс — чёрный ящик: режет текст на ~1k-символьные сегменты и классифицирует latent style, не наш regex-каталог.",
+    "Большая доля AI-сегментов «чистые» по штампам (tell низкий), но рубленый ритм / inventory локации / экранный жаргон.",
+    "HUMAN-эталон (гл.1) сам содержит короткие фразы, «однако», UI-слова («Уровень 1») — жёсткие правила дают ложные AI.",
+    "Adaptive-centroid + fusion (w≈0.75, thr=55) оптимизированы по LOO ~76%, не под полный match thr Яндекса.",
+    "0% AI% на тексте ≠ 100% accuracy детектора: цель «текст HUMAN» и «детектор всегда угадывает Яндекс» — разные задачи.",
+  ],
+  localPriorities: [
+    "staccato / triple short sentences",
+    "space inventory (Пол/Стены/Риски)",
+    "status:/шаги: UI colon",
+    "day summary loops",
+    "classic interface stamps (NFC, не найдено, метка)",
+  ],
+} as const;
 
 export interface AiTellHit {
   id: string;
@@ -185,6 +234,33 @@ export function interfaceTellShare(text: string): number {
   return hits.length / wordCount;
 }
 
+/**
+ * Доля предложений ≤ maxWords и максимальная цепочка таких подряд.
+ * Yandex-AI: shortShare×1.8, maxShortChain×2 vs HUMAN (live 2026-07).
+ */
+export function shortSentenceStats(text: string, maxWords = 4): {
+  share: number;
+  maxChain: number;
+  count: number;
+  total: number;
+} {
+  const lengths = splitSentences(text).map((sentence) => wordsOf(sentence).length).filter((n) => n > 0);
+  if (!lengths.length) return { share: 0, maxChain: 0, count: 0, total: 0 };
+  let chain = 0;
+  let maxChain = 0;
+  let count = 0;
+  for (const n of lengths) {
+    if (n <= maxWords) {
+      count += 1;
+      chain += 1;
+      maxChain = Math.max(maxChain, chain);
+    } else {
+      chain = 0;
+    }
+  }
+  return { share: count / lengths.length, maxChain, count, total: lengths.length };
+}
+
 export function aiTellScore(text: string): AiTellScore {
   const hits = detectAiTells(text);
   const wordCount = Math.max(wordsOf(text).length, 1);
@@ -194,19 +270,30 @@ export function aiTellScore(text: string): AiTellScore {
   const burstiness = sentenceBurstiness(text);
   const openerRepetition = repeatedOpenerShare(text);
   const interfaceShare = interfaceTellShare(text);
+  const short = shortSentenceStats(text, 4);
 
-  // Составляющие: штампы (до 50), UI-лог (до 15), ровный ритм (до 25), однообразные зачины (до 10).
-  const patternComponent = Math.min(patternDensity * 4, 50);
+  // Составляющие: штампы (до 45), UI-лог (до 15), стаккато (до 20), ровный ритм (до 15), зачины (до 10).
+  const patternComponent = Math.min(patternDensity * 4, 45);
   const interfaceComponent = Math.min(interfaceShare * 4000, 15);
+  // Стаккато: Яндекс-AI shortShare≈0.34 / maxChain≈4 vs HUMAN 0.19 / 2.1
+  // Порог выше HUMAN-коридора (0.23 у гл.1), чтобы не штрафовать эталон.
+  let staccatoComponent = 0;
+  if (short.total >= 6) {
+    if (short.share >= 0.34) staccatoComponent += Math.min((short.share - 0.30) * 70, 10);
+    if (short.maxChain >= 5) staccatoComponent += Math.min((short.maxChain - 4) * 3, 8);
+  }
+  staccatoComponent = Math.min(staccatoComponent, 18);
   // 0.50 — нижняя граница живого коридора после калибровки по авторской главе 1.
-  // Более высокий порог ошибочно штрафовал короткие бытовые сцены того же автора.
   const rhythmFloor = 0.5;
   const rhythmComponent = burstiness >= rhythmFloor
     ? 0
-    : Math.min(((rhythmFloor - burstiness) / rhythmFloor) * 25, 25);
+    : Math.min(((rhythmFloor - burstiness) / rhythmFloor) * 15, 15);
   const openerComponent = Math.min(openerRepetition * 50, 10);
   const score = Math.round(
-    Math.min(patternComponent + interfaceComponent + rhythmComponent + openerComponent, 100),
+    Math.min(
+      patternComponent + interfaceComponent + staccatoComponent + rhythmComponent + openerComponent,
+      100,
+    ),
   );
   return { score, patternDensity, burstiness, openerRepetition, hits };
 }
@@ -427,17 +514,17 @@ const NINE_LEVERS = `ДЕВЯТЬ РЫЧАГОВ ЖИВОГО ТЕКСТА:
  * Паттерны, подтверждённые прогонами Yandex-нейродетектора (лабиринт, 2026-07).
  * Вшиваются в генерацию/рерайт, чтобы не оптимизировать «на глаз».
  */
-export const YANDEX_DETECTOR_STYLE = `ПАТТЕРНЫ НЕЙРОДЕТЕКТОРА (Yandex lab, обязательно; эталон: гл.6 optimal ≈ HUMAN, провал: UI-лог гл.7):
-1) НЕ пиши рубленый «телеграф» без подлежащего (цепочки «Шаг. Ещё. Стоял. Смотрел.» на весь текст) — такие сегменты часто идут в AI 100%.
-2) В повествовании от 1 лица держи «я» умеренно (~3–7 на 100 слов; в эталоне гл.6 ближе к 15–17 на 100 — лучше чуть больше «я», чем вычищать). Безличные/глагольные куски — разрядка, не единственный режим.
-3) Стиль «дневник / связная проза инженера»: полные фразы, бытовые мысли («подумал», «решил», «достал»), лёгкая шероховатость. Не «литературный пафос» и не «инструкция к механизму».
-4) Один проход сцены: не повторяй одно и то же действие 2–3 раза («подошёл к отпечатку / и что дальше?» петлёй).
-5) Не начинай главу с «Начну снова» и не вставляй бессмысленные часы экрана (типа «3:47»), если они не сюжетный якорь канона.
-6) Конкретика лучше абстракции: жест, предмет, число заряда, запах — вместо «приближаюсь к пониманию» / «ключ к пониманию всего этого».
-7) НЕ пиши квест-лог: цепочки «1. … 2. … 3. …», «не найдено: 14», «слово / слово», CW/CCW, NFC латиницей, повтор «обнаружена новая метка». Механику показывай телом (провёл телефоном, ткнул, кольцо поехало), подписи экрана — редко, встроенно в абзац, не таблицей.
-8) Сны/дом: короче и «грязнее» дневника, не отполированная новелла. Стык сон→явь через жест (кроссовки, ключи, %), не через резюме.
-9) Эталон ритма: средняя длина фразы ~8–10 слов; short≤4 слов — меньше ~25% предложений. Не раздувай главу UI-сбором (17 пунктов хуже 4–6 находок).
-10) После правок сверяй: локальный AI-tell (humanStyle, category interface) + при возможности Yandex; HUMAN-сегменты отчёта не переписывай.`;
+export const YANDEX_DETECTOR_STYLE = `ПАТТЕРНЫ НЕЙРОДЕТЕКТОРА (Yandex lab, live 2026-07; ~108 HUMAN + ~161 AI сегментов «Лабиринт»):
+1) СТАККАТО = AI: shortShare AI≈0.34 vs HUMAN≈0.19; цепочки коротких фраз maxChain AI≈4 vs H≈2. Не «Сел. Встал. Пошёл.» и не 3+ коротких подряд.
+2) От 1 лица: дневник. HUMAN чаще «подумал» (×4), «решил», «однако». Не вычищай «я» в телеграф.
+3) «Дневник инженера»: жест, %, запах, связная фраза. Не inventory локации: «Пол твёрже. Стены гладкие. Риски…».
+4) Один проход сцены; ≤1–2 «что дальше?».
+5) Запрет: «Начну снова», часы «3:47» без канона, summary дня «стол, кухня, снова стол».
+6) UI-флаги AI: «статус:», «шаги:», «на линии», «усик» карты, NFC/CW, «не найдено: N», «обнаружена новая метка», нумерованный лог. Механику — телом; подпись экрана редко.
+7) Сон→явь: не резюме дня, а жест → пол/кольцо. Ур.2: без квест-тура по всем датчикам подряд.
+8) Ритм: средняя фраза ~9 слов; short≤4 <~25% предложений.
+9) Локальный детектор ≠ Яндекс на 100% (см. YANDEX_LOCAL_GAP): ~70% AI-сегментов Яндекса раньше имели низкий stamp-score — ловим стаккато/UI структурно.
+10) Сверяй: aiTell + calibrated detector + Yandex; HUMAN-сегменты не трогай.`;
 
 // Базовые правила человечного письма, добавляются к системной инструкции генерации.
 export function humanStyleDirectives(): string {

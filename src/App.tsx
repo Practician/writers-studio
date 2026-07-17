@@ -9,6 +9,8 @@ import {
   BookOpen, 
   Plus, 
   Trash2, 
+  Eraser,
+  RefreshCw,
   Sparkles, 
   FileText, 
   Wand2, 
@@ -30,12 +32,20 @@ import {
 import { Story, Chapter, Character, WorldRule, TextSelection, AuthorEditTarget } from "./types";
 import { hashText } from "./lib/authorAudit";
 import { DEFAULT_STORIES } from "./defaultData";
-import { mergeLabyrinthCanonIntoStories } from "./data/labyrinthCanon";
+import {
+  LABYRINTH_STORY_ID,
+  buildLabyrinthAuthorProfile,
+  ensureLabyrinthChapterSlots,
+  mergeLabyrinthCanonIntoStories,
+  shouldSeedLabyrinthAuthorProfile,
+} from "./data/labyrinthCanon";
+import { loadAuthorProfile, saveAuthorProfile } from "./lib/authorStorage";
 import {
   defaultModelForProvider,
   loadLlmKeys,
   loadLlmProvider,
   llmRequestFields,
+  providerLabel,
   saveLlmKeys,
   saveLlmProvider,
   type LlmProviderChoice,
@@ -275,6 +285,22 @@ export default function App() {
 
   // 1. Initial Load and Seeding (+ влитие канона «Лабиринт» в bible/plan/гл.5–6)
   useEffect(() => {
+    const seedAuthorStyle = (storiesList: Story[]) => {
+      // Образец голоса из Word-гл.6 → IndexedDB, чтобы «Максимум»/generate продолжали паттерны
+      const lab =
+        storiesList.find((s) => s.id === LABYRINTH_STORY_ID) ||
+        storiesList.find(
+          (s) => /лабиринт/i.test(s.title || "") && /путь\s*домой/i.test(s.title || ""),
+        );
+      if (!lab) return;
+      void loadAuthorProfile(lab.id)
+        .then((existing) => {
+          if (!shouldSeedLabyrinthAuthorProfile(existing)) return;
+          return saveAuthorProfile({ ...buildLabyrinthAuthorProfile(), storyId: lab.id });
+        })
+        .catch((err) => console.warn("Labyrinth author profile seed skipped", err));
+    };
+
     const saved = localStorage.getItem("writers_studio_stories");
     if (saved) {
       try {
@@ -283,6 +309,7 @@ export default function App() {
           const merged = mergeLabyrinthCanonIntoStories(parsed);
           setStories(merged);
           localStorage.setItem("writers_studio_stories", JSON.stringify(merged));
+          seedAuthorStyle(merged);
 
           const savedStoryId = localStorage.getItem("writers_studio_selected_story_id");
           const savedChapterId = localStorage.getItem("writers_studio_selected_chapter_id");
@@ -312,6 +339,7 @@ export default function App() {
     setSelectedStoryId(seeded[0].id);
     setSelectedChapterId(seeded[0].chapters[0].id);
     localStorage.setItem("writers_studio_stories", JSON.stringify(seeded));
+    seedAuthorStyle(seeded);
   }, []);
 
   // Get active story and active chapter
@@ -490,7 +518,7 @@ export default function App() {
 
   const handleDeleteChapter = (id: string) => {
     if (!activeStory) return;
-    if (confirm("Вы уверены, что хотите удалить эту главу? Весь её текст будет стёрт.")) {
+    if (confirm("Удалить главу из оглавления? Текст будет потерян (слот можно вернуть кнопкой «Канон», если это Лабиринт).")) {
       const filtered = activeStory.chapters.filter(c => c.id !== id);
       const updatedStory = {
         ...activeStory,
@@ -500,6 +528,68 @@ export default function App() {
 
       saveAllStories(stories.map(s => s.id === activeStory.id ? updatedStory : s));
       setSelectedChapterId(filtered[0]?.id || "");
+    }
+  };
+
+  /** Стереть текст текущей главы (слот в оглавлении остаётся). */
+  const handleClearActiveChapterContent = () => {
+    if (!activeStory || !activeChapter) return;
+    if (!activeChapter.content?.trim()) {
+      alert("В этой главе уже нет текста.");
+      return;
+    }
+    if (!confirm(`Стереть текст «${activeChapter.title}»?\nНазвание главы в оглавлении останется.`)) return;
+    const updatedChapters = activeStory.chapters.map((c) =>
+      c.id === activeChapter.id ? { ...c, content: "" } : c,
+    );
+    saveAllStories(
+      stories.map((s) =>
+        s.id === activeStory.id
+          ? { ...activeStory, chapters: updatedChapters, updatedAt: Date.now() }
+          : s,
+      ),
+    );
+  };
+
+  /**
+   * Восстановить слоты 1–9 (в т.ч. гл.7) и текст 5–6 для ТЕКУЩЕЙ книги.
+   * Работает даже если книгу переименовали — слоты кладутся в activeStory.
+   */
+  const handleResyncLabyrinthCanon = () => {
+    if (!activeStory) return;
+    if (
+      !confirm(
+        "Восстановить структуру канона в этой книге?\n• Появятся недостающие главы 1–9 (в т.ч. 7-я)\n• Главы 5–6: текст из канона (перезапишет)\n• Текст остальных глав не затирается",
+      )
+    ) {
+      return;
+    }
+    // 1) всегда правим активную книгу напрямую
+    const fixedActive = ensureLabyrinthChapterSlots(activeStory);
+    let next = stories.map((s) => (s.id === activeStory.id ? fixedActive : s));
+    // 2) плюс общий merge (на случай второй копии / id story-labyrinth)
+    next = mergeLabyrinthCanonIntoStories(next);
+    // если merge затронул другую запись — всё равно оставим fixedActive в выбранной
+    const still = next.find((s) => s.id === activeStory.id);
+    if (still && still.chapters.length < fixedActive.chapters.length) {
+      next = next.map((s) => (s.id === activeStory.id ? fixedActive : s));
+    } else if (still) {
+      // merge мог обновить bible — но слоты active уже должны быть полными
+      const ensured = ensureLabyrinthChapterSlots(still);
+      next = next.map((s) => (s.id === activeStory.id ? ensured : s));
+    }
+    saveAllStories(next);
+    const lab = next.find((s) => s.id === activeStory.id) || next[0];
+    if (lab) {
+      setSelectedStoryId(lab.id);
+      const prefer =
+        lab.chapters.find((c) => /глава\s*7/i.test(c.title)) ||
+        lab.chapters.find((c) => /глава\s*6/i.test(c.title)) ||
+        lab.chapters[lab.chapters.length - 1];
+      if (prefer) setSelectedChapterId(prefer.id);
+      alert(`Готово: в оглавлении ${lab.chapters.length} глав. Глава 7: ${
+        lab.chapters.some((c) => /глава\s*7/i.test(c.title)) ? "есть" : "нет — напишите в чат"
+      }.`);
     }
   };
 
@@ -1029,143 +1119,15 @@ export default function App() {
     document.body.removeChild(element);
   };
 
-  const handleExportDoc = () => {
+  const handleExportDoc = async () => {
     if (!activeStory) return;
-
-    let htmlContent = `
-      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
-      <head>
-        <title>${activeStory.title}</title>
-        <!--[if gte mso 9]>
-        <xml>
-          <w:WordDocument>
-            <w:View>Print</w:View>
-            <w:Zoom>100</w:Zoom>
-          </w:WordDocument>
-        </xml>
-        <![endif]-->
-        <style>
-          body {
-            font-family: 'Arial', sans-serif;
-            line-height: 1.6;
-            color: #333333;
-            margin: 1in;
-          }
-          h1 {
-            font-size: 24pt;
-            text-align: center;
-            margin-bottom: 24pt;
-            color: #111111;
-          }
-          .metadata {
-            text-align: center;
-            font-style: italic;
-            margin-bottom: 48pt;
-            font-size: 11pt;
-            color: #666666;
-            border-bottom: 1px solid #eeeeee;
-            padding-bottom: 12pt;
-          }
-          h2 {
-            font-size: 16pt;
-            margin-top: 36pt;
-            margin-bottom: 12pt;
-            border-bottom: 1px solid #cccccc;
-            padding-bottom: 6pt;
-            color: #1d4ed8;
-          }
-          p {
-            font-size: 12pt;
-            text-indent: 0.5in;
-            margin-bottom: 12pt;
-            text-align: justify;
-          }
-          .page-break {
-            page-break-before: always;
-          }
-          .lore-title {
-            font-size: 14pt;
-            font-weight: bold;
-            margin-top: 18pt;
-            color: #1d4ed8;
-          }
-          .char-block {
-            margin-bottom: 18pt;
-            padding: 10pt;
-            background-color: #f8fafc;
-            border-left: 3pt solid #1d4ed8;
-          }
-        </style>
-      </head>
-      <body>
-        <h1>${activeStory.title}</h1>
-        <div class="metadata">
-          <p style="text-indent: 0;"><strong>Жанр:</strong> ${activeStory.genre}</p>
-          <p style="text-indent: 0;"><strong>Описание:</strong> ${activeStory.description}</p>
-        </div>
-    `;
-
-    // Add Chapters
-    activeStory.chapters.forEach((ch) => {
-      htmlContent += `
-        <div class="page-break"></div>
-        <h2>${ch.title}</h2>
-        <div style="font-style: italic; margin-bottom: 18pt; color: #555555; text-indent: 0;">Синопсис главы: ${ch.summary || "Без описания"}</div>
-      `;
-      const paras = ch.content.split("\n\n");
-      paras.forEach(p => {
-        if (p.trim()) {
-          htmlContent += `<p>${p.replace(/\n/g, "<br/>")}</p>`;
-        }
-      });
-    });
-
-    // Add Characters
-    if (activeStory.characters.length > 0) {
-      htmlContent += `
-        <div class="page-break"></div>
-        <h2>Действующие лица</h2>
-      `;
-      activeStory.characters.forEach(char => {
-        htmlContent += `
-          <div class="char-block">
-            <strong>Имя:</strong> ${char.name}<br/>
-            <strong>Роль:</strong> ${char.role}<br/>
-            <strong>Черты:</strong> ${char.traits || "не указаны"}<br/>
-            <strong>Цель:</strong> ${char.goals || "не указана"}<br/>
-            <strong>Биография:</strong><br/>
-            ${char.description.replace(/\n/g, "<br/>")}
-          </div>
-        `;
-      });
+    try {
+      const { exportStoryDocx } = await import("./lib/exportDocx");
+      await exportStoryDocx(activeStory);
+    } catch (err) {
+      console.error(err);
+      alert("Не удалось сформировать Word-файл (.docx). Попробуйте ещё раз.");
     }
-
-    // Add World Lore
-    if (activeStory.worldRules.length > 0) {
-      htmlContent += `
-        <div class="page-break"></div>
-        <h2>Правила мира и Лор</h2>
-      `;
-      activeStory.worldRules.forEach(rule => {
-        htmlContent += `
-          <div class="lore-title">${rule.title}</div>
-          <div style="font-size: 11pt; margin-bottom: 12pt;">${rule.content.replace(/\n/g, "<br/>")}</div>
-        `;
-      });
-    }
-
-    htmlContent += `
-      </body>
-      </html>
-    `;
-
-    const element = document.createElement("a");
-    const file = new Blob([htmlContent], { type: "application/msword;charset=utf-8" });
-    element.href = URL.createObjectURL(file);
-    element.download = `${activeStory.title}.doc`;
-    document.body.appendChild(element);
-    element.click();
-    document.body.removeChild(element);
   };
 
   const handleManualSave = () => {
@@ -1178,78 +1140,15 @@ export default function App() {
     }, 1200);
   };
 
-  const handleExportSingleChapterDoc = (ch: Chapter) => {
+  const handleExportSingleChapterDoc = async (ch: Chapter) => {
     if (!activeStory) return;
-
-    let htmlContent = `
-      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
-      <head>
-        <title>${ch.title}</title>
-        <!--[if gte mso 9]>
-        <xml>
-          <w:WordDocument>
-            <w:View>Print</w:View>
-            <w:Zoom>100</w:Zoom>
-          </w:WordDocument>
-        </xml>
-        <![endif]-->
-        <style>
-          body {
-            font-family: 'Arial', sans-serif;
-            line-height: 1.6;
-            color: #333333;
-            margin: 1in;
-          }
-          h1 {
-            font-size: 22pt;
-            text-align: center;
-            margin-bottom: 24pt;
-            color: #111111;
-          }
-          .metadata {
-            text-align: center;
-            font-style: italic;
-            margin-bottom: 36pt;
-            font-size: 11pt;
-            color: #666666;
-            border-bottom: 1px solid #eeeeee;
-            padding-bottom: 12pt;
-          }
-          p {
-            font-size: 12pt;
-            text-indent: 0.5in;
-            margin-bottom: 12pt;
-            text-align: justify;
-          }
-        </style>
-      </head>
-      <body>
-        <h1>${activeStory.title}</h1>
-        <div class="metadata">
-          <p style="text-indent: 0;"><strong>Глава:</strong> ${ch.title}</p>
-          <p style="text-indent: 0;"><strong>Синопсис:</strong> ${ch.summary || "Без описания"}</p>
-        </div>
-    `;
-
-    const paras = ch.content.split("\n\n");
-    paras.forEach(p => {
-      if (p.trim()) {
-        htmlContent += `<p>${p.replace(/\n/g, "<br/>")}</p>`;
-      }
-    });
-
-    htmlContent += `
-      </body>
-      </html>
-    `;
-
-    const element = document.createElement("a");
-    const file = new Blob([htmlContent], { type: "application/msword;charset=utf-8" });
-    element.href = URL.createObjectURL(file);
-    element.download = `${activeStory.title} - ${ch.title}.doc`;
-    document.body.appendChild(element);
-    element.click();
-    document.body.removeChild(element);
+    try {
+      const { exportChapterDocx } = await import("./lib/exportDocx");
+      await exportChapterDocx(activeStory.title, ch);
+    } catch (err) {
+      console.error(err);
+      alert("Не удалось сформировать Word-файл (.docx). Попробуйте ещё раз.");
+    }
   };
 
   // Metrics
@@ -1290,7 +1189,12 @@ export default function App() {
   };
 
   return (
-    <div className="flex flex-col h-screen w-full bg-[#0b0f19] text-slate-100 selection:bg-blue-600/30 overflow-hidden" id="main-app-container">
+    <div
+      className="notranslate flex flex-col h-screen w-full bg-[#0b0f19] text-slate-100 selection:bg-blue-600/30 overflow-hidden"
+      id="main-app-container"
+      lang="ru"
+      translate="no"
+    >
       {/* Top Navigation Panel */}
       <header className="flex justify-between items-center px-5 h-14 bg-[#0e1424] border-b border-slate-800/80 shrink-0 z-10">
         {/* Book Selector Dropdown */}
@@ -1327,11 +1231,12 @@ export default function App() {
 
           <button
             onClick={() => setShowNewStoryModal(true)}
-            className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded-lg flex items-center gap-1 cursor-pointer transition-colors"
+            className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded-lg flex items-center gap-1 cursor-pointer transition-colors whitespace-nowrap"
             id="create-new-book-btn"
+            title="Добавить новую книгу в студию"
           >
             <Plus className="w-3.5 h-3.5" />
-            <span>Новая книга</span>
+            <span>Добавить новую книгу</span>
           </button>
         </div>
 
@@ -1347,55 +1252,63 @@ export default function App() {
 
           {/* Action Buttons */}
           <div className="flex items-center gap-2">
-            {/* LLM provider: NVIDIA / Gemini / Groq / OpenRouter / auto */}
+            {/* LLM provider switch + API keys.
+                translate="no" — иначе переводчик браузера ломает бренды:
+                NVIDIA→«ВИДА», Gemini→«Близнецы», Groq→«Грок». */}
             <div
-              className="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-900 border border-slate-800 max-w-[min(100vw-2rem,28rem)] overflow-x-auto"
-              title={`Провайдер: ${llmProvider} · модель: ${selectedModel}`}
+              className="notranslate flex items-center gap-1 pl-1 pr-0.5 py-0.5 rounded-xl bg-gradient-to-r from-slate-900 via-slate-900 to-slate-900/80 border border-slate-700/80 shadow-inner max-w-[min(100vw-2rem,32rem)] overflow-x-auto"
+              title={`Сейчас: ${providerLabel(llmProvider)} · модель: ${selectedModel}`}
               id="llm-provider-switch"
+              translate="no"
+              lang="en"
             >
               <button
                 type="button"
                 onClick={openLlmSettings}
-                className="p-1.5 text-slate-400 hover:text-amber-300 cursor-pointer shrink-0"
-                title="Настройки ключей API (хранятся в браузере)"
+                className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-semibold text-amber-200/90 bg-amber-950/40 border border-amber-800/40 hover:bg-amber-900/50 hover:text-amber-100 cursor-pointer shrink-0 transition-colors"
+                title="Настройки ключей API"
                 id="llm-settings-btn"
               >
                 <Settings className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">API</span>
               </button>
-              <Cpu className="w-3.5 h-3.5 text-slate-500 mr-0.5 shrink-0" />
+              <div className="w-px h-5 bg-slate-700/80 shrink-0" />
+              <Cpu className="w-3.5 h-3.5 text-slate-500 ml-0.5 shrink-0" />
               {(
                 [
-                  { id: "nvidia" as const, label: "NVIDIA" },
-                  { id: "gemini" as const, label: "Gemini" },
-                  { id: "groq" as const, label: "Groq" },
-                  { id: "openrouter" as const, label: "OR" },
-                  { id: "auto" as const, label: "Все" },
+                  { id: "groq" as const, label: "Groq", active: "bg-orange-600/35 text-orange-100 border-orange-600/50", hint: "Быстрый Groq — основной по умолчанию" },
+                  { id: "gemini" as const, label: "Gemini", active: "bg-blue-600/35 text-blue-200 border-blue-600/50", hint: "Google Gemini" },
+                  { id: "openrouter" as const, label: "OpenRouter", active: "bg-pink-600/35 text-pink-100 border-pink-600/50", hint: "OpenRouter free-модели" },
+                  { id: "nvidia" as const, label: "NVIDIA", active: "bg-emerald-600/35 text-emerald-200 border-emerald-600/50", hint: "NVIDIA NIM — сильнее, но часто медленнее" },
+                  { id: "auto" as const, label: "Автовыбор", active: "bg-violet-600/35 text-violet-100 border-violet-600/50", hint: "Groq → Gemini → OpenRouter → NVIDIA при сбоях" },
                 ] as const
               ).map((opt) => {
                 const ok = providerHasKey(opt.id);
+                const selected = llmProvider === opt.id;
                 return (
                   <button
                     key={opt.id}
                     type="button"
                     disabled={!ok && opt.id !== "auto"}
                     onClick={() => setLlmProvider(opt.id)}
-                    className={`px-1.5 py-1 rounded-md text-[10px] sm:text-[11px] font-medium transition-all cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed whitespace-nowrap ${
-                      llmProvider === opt.id
-                        ? opt.id === "nvidia"
-                          ? "bg-emerald-600/30 text-emerald-300 border border-emerald-700/50"
-                          : opt.id === "gemini"
-                            ? "bg-blue-600/30 text-blue-300 border border-blue-700/50"
-                            : opt.id === "groq"
-                              ? "bg-orange-600/30 text-orange-200 border border-orange-700/50"
-                              : opt.id === "openrouter"
-                                ? "bg-pink-600/30 text-pink-200 border border-pink-700/50"
-                                : "bg-violet-600/30 text-violet-200 border border-violet-700/50"
-                        : "text-slate-400 hover:text-slate-200 border border-transparent"
+                    className={`notranslate px-2 py-1 rounded-lg text-[10px] sm:text-[11px] font-medium transition-all cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed whitespace-nowrap border ${
+                      selected
+                        ? opt.active
+                        : "text-slate-400 hover:text-slate-100 border-transparent hover:bg-slate-800/60"
                     }`}
                     id={`llm-provider-${opt.id}`}
-                    title={ok || opt.id === "auto" ? opt.label : "Нет ключа — откройте ⚙ Настройки ИИ"}
+                    translate="no"
+                    lang="en"
+                    title={
+                      ok || opt.id === "auto"
+                        ? `${opt.hint}${selected ? ` · модель: ${selectedModel}` : ""}`
+                        : "Нет ключа — откройте API"
+                    }
                   >
-                    {opt.label}
+                    {/* <span> + unicode isolates — Chrome Translate часто не трогает */}
+                    <span translate="no" className="notranslate">
+                      {"\u2068"}{opt.label}{"\u2069"}
+                    </span>
                   </button>
                 );
               })}
@@ -1417,28 +1330,28 @@ export default function App() {
 
             <button
               onClick={() => setShowImportModal(true)}
-              className="p-2 bg-[#10b981]/15 hover:bg-[#10b981]/25 border border-[#10b981]/30 hover:border-[#10b981]/50 text-[#34d399] hover:text-[#6ee7b7] text-xs rounded-lg flex items-center gap-1.5 transition-all cursor-pointer"
-              title="Загрузить свой план, библию мира, персонажа или главу из файла .TXT или Word (.docx)"
+              className="p-2 bg-[#10b981]/15 hover:bg-[#10b981]/25 border border-[#10b981]/30 hover:border-[#10b981]/50 text-[#34d399] hover:text-[#6ee7b7] text-xs rounded-lg flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
+              title="Загрузить план, библию мира, персонажа или главу из .TXT или Word (.docx)"
               id="import-txt-btn"
             >
               <Upload className="w-4 h-4" />
-              <span>Импорт .TXT / Word</span>
+              <span>Загрузить TXT / Word</span>
             </button>
 
             <button
               onClick={handleExportTxt}
-              className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white text-xs rounded-lg flex items-center gap-1.5 transition-all cursor-pointer"
+              className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white text-xs rounded-lg flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
               title="Скачать всю рукопись (.txt)"
               id="export-book-btn"
             >
               <Download className="w-4 h-4" />
-              <span>Экспорт .TXT</span>
+              <span>Скачать .TXT</span>
             </button>
 
             <button
               onClick={handleExportDoc}
               className="p-2 bg-blue-600/15 hover:bg-blue-600/25 border border-blue-500/30 hover:border-blue-500/50 text-blue-400 hover:text-blue-300 text-xs rounded-lg flex items-center gap-1.5 transition-all cursor-pointer"
-              title="Скачать всю рукопись с разметкой глав, персонажей и лора в формате Word (.doc)"
+              title="Скачать всю рукопись с разметкой глав, персонажей и лора в формате Word (.docx)"
               id="export-doc-btn"
             >
               <FileText className="w-4 h-4" />
@@ -1467,18 +1380,28 @@ export default function App() {
                 <Layers className="w-4 h-4 text-blue-400" />
                 Оглавление
               </span>
-              <button
-                onClick={handleAddChapter}
-                className="p-1.5 hover:bg-slate-800 text-slate-200 hover:text-white rounded-lg transition-colors cursor-pointer"
-                title="Добавить главу"
-                id="add-chapter-btn"
-              >
-                <Plus className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-0.5">
+                <button
+                  onClick={handleResyncLabyrinthCanon}
+                  className="p-1.5 hover:bg-slate-800 text-slate-200 hover:text-emerald-300 rounded-lg transition-colors cursor-pointer"
+                  title="Восстановить главы 1–9 (в т.ч. 7-ю) и текст 5–6"
+                  id="resync-canon-btn"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={handleAddChapter}
+                  className="p-1.5 hover:bg-slate-800 text-slate-200 hover:text-white rounded-lg transition-colors cursor-pointer"
+                  title="Добавить главу"
+                  id="add-chapter-btn"
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto space-y-1.5" id="chapters-list">
-              {activeStory.chapters.map((ch, idx) => (
+              {activeStory.chapters.map((ch) => (
                 <div
                   key={ch.id}
                   onClick={() => {
@@ -1486,13 +1409,13 @@ export default function App() {
                     setSelectedText("");
                     setTextSelection(null);
                   }}
-                  className={`p-2.5 rounded-xl border cursor-pointer transition-all group flex justify-between items-center ${
+                  className={`p-2.5 rounded-xl border cursor-pointer transition-all group flex justify-between items-center gap-1 ${
                     selectedChapterId === ch.id
                       ? "bg-blue-600/10 text-blue-400 border-blue-500/40"
                       : "bg-transparent text-slate-300 border-transparent hover:bg-slate-800/40 hover:text-slate-100"
                   }`}
                 >
-                  <div className="flex items-center gap-2 overflow-hidden">
+                  <div className="flex items-center gap-2 overflow-hidden min-w-0">
                     <FileText className="w-4 h-4 shrink-0 opacity-70" />
                     <span className="text-xs font-medium truncate">{ch.title}</span>
                   </div>
@@ -1502,8 +1425,8 @@ export default function App() {
                       e.stopPropagation();
                       handleDeleteChapter(ch.id);
                     }}
-                    className="opacity-70 group-hover:opacity-100 text-slate-500 hover:text-red-400 p-1 rounded transition-opacity"
-                    title="Удалить главу"
+                    className="opacity-70 group-hover:opacity-100 text-slate-500 hover:text-red-400 p-1 rounded transition-opacity shrink-0"
+                    title="Удалить главу из оглавления"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -1580,10 +1503,21 @@ export default function App() {
                   <button
                     onClick={() => handleExportSingleChapterDoc(activeChapter)}
                     className="px-3 py-1.5 bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 hover:text-indigo-300 border border-indigo-500/20 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
-                    title="Скачать эту главу как Word документ (.doc)"
+                    title="Скачать эту главу как Word документ (.docx)"
                   >
                     <Download className="w-3.5 h-3.5" />
                     <span>Скачать в Word</span>
+                  </button>
+
+                  {/* Clear current chapter text only */}
+                  <button
+                    onClick={handleClearActiveChapterContent}
+                    className="px-3 py-1.5 bg-amber-600/10 hover:bg-amber-600/20 text-amber-400 hover:text-amber-300 border border-amber-500/20 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
+                    title="Стереть текст этой главы (название в оглавлении останется)"
+                    id="clear-chapter-content-btn"
+                  >
+                    <Eraser className="w-3.5 h-3.5" />
+                    <span>Стереть</span>
                   </button>
                 </div>
               </div>
@@ -1765,74 +1699,139 @@ export default function App() {
 
       {/* LLM API keys settings */}
       {showLlmSettings && (
-        <div className="fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" id="llm-settings-modal">
-          <div className="bg-[#121826] border border-slate-700 rounded-2xl w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
-            <div className="p-5 border-b border-slate-800 flex items-start justify-between gap-3">
-              <div>
-                <h2 className="text-sm font-bold text-slate-100 flex items-center gap-2">
-                  <Settings className="w-4 h-4 text-amber-400" />
-                  Настройки ИИ (ключи API)
-                </h2>
-                <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                  Ключи хранятся <strong className="text-slate-300">только в этом браузере</strong> (localStorage)
-                  и уходят на ваш локальный сервер. Если поле пустое — берётся ключ из <code className="text-slate-500">.env</code>.
-                  Для личного ПК на localhost это удобнее; в общий интернет ключи лучше только в .env.
-                </p>
+        <div className="fixed inset-0 z-[80] bg-black/75 backdrop-blur-md flex items-center justify-center p-4" id="llm-settings-modal">
+          <div className="bg-gradient-to-b from-[#151c2c] to-[#0f1420] border border-slate-700/80 rounded-2xl w-full max-w-xl shadow-2xl shadow-black/50 max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="px-6 py-5 border-b border-slate-800/90 bg-slate-950/40 flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 shrink-0">
+                  <Cpu className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-slate-50 tracking-tight">
+                    Ключи API
+                  </h2>
+                  <p className="text-[11px] text-slate-400 mt-1.5 leading-relaxed max-w-md">
+                    Вставьте ключи провайдеров ниже. Они хранятся <strong className="text-slate-300">только в этом браузере</strong>
+                    {" "}и уходят на локальный сервер. Пустое поле → ключ из <code className="px-1 py-0.5 rounded bg-slate-800 text-slate-400">.env</code>.
+                  </p>
+                </div>
               </div>
-              <button type="button" onClick={() => setShowLlmSettings(false)} className="text-slate-500 hover:text-white text-lg leading-none cursor-pointer">×</button>
+              <button
+                type="button"
+                onClick={() => setShowLlmSettings(false)}
+                className="text-slate-500 hover:text-white hover:bg-slate-800 w-8 h-8 rounded-lg text-lg leading-none cursor-pointer transition-colors"
+                aria-label="Закрыть"
+              >
+                ×
+              </button>
             </div>
-            <div className="p-5 space-y-4 text-xs">
+
+            <div className="p-5 space-y-3 text-xs overflow-y-auto flex-1">
               {(
                 [
-                  { key: "gemini" as const, label: "Google Gemini", hint: "aistudio.google.com/apikey", env: "GEMINI_API_KEY", envOk: llmStatus?.keysFromEnv?.gemini },
-                  { key: "nvidia" as const, label: "NVIDIA NIM", hint: "build.nvidia.com → API Key", env: "NVIDIA_API_KEY", envOk: llmStatus?.keysFromEnv?.nvidia },
-                  { key: "groq" as const, label: "Groq (быстрый free)", hint: "console.groq.com", env: "GROQ_API_KEY", envOk: llmStatus?.keysFromEnv?.groq },
-                  { key: "openrouter" as const, label: "OpenRouter (:free модели)", hint: "openrouter.ai/keys", env: "OPENROUTER_API_KEY", envOk: llmStatus?.keysFromEnv?.openrouter },
+                  {
+                    key: "groq" as const,
+                    label: "Groq (рекомендуется)",
+                    hint: "console.groq.com — быстрый free-tier, первый в Автовыборе",
+                    env: "GROQ_API_KEY",
+                    envOk: llmStatus?.keysFromEnv?.groq,
+                    accent: "border-orange-500/25 bg-orange-950/15",
+                    badge: "text-orange-200 bg-orange-950/50 border-orange-800/40",
+                  },
+                  {
+                    key: "gemini" as const,
+                    label: "Google Gemini",
+                    hint: "aistudio.google.com/apikey",
+                    env: "GEMINI_API_KEY",
+                    envOk: llmStatus?.keysFromEnv?.gemini,
+                    accent: "border-blue-500/25 bg-blue-950/20",
+                    badge: "text-blue-300 bg-blue-950/50 border-blue-800/40",
+                  },
+                  {
+                    key: "openrouter" as const,
+                    label: "OpenRouter",
+                    hint: "openrouter.ai/keys — :free модели",
+                    env: "OPENROUTER_API_KEY",
+                    envOk: llmStatus?.keysFromEnv?.openrouter,
+                    accent: "border-pink-500/25 bg-pink-950/15",
+                    badge: "text-pink-200 bg-pink-950/50 border-pink-800/40",
+                  },
+                  {
+                    key: "nvidia" as const,
+                    label: "NVIDIA NIM",
+                    hint: "build.nvidia.com — сильнее, но часто медленнее",
+                    env: "NVIDIA_API_KEY",
+                    envOk: llmStatus?.keysFromEnv?.nvidia,
+                    accent: "border-emerald-500/25 bg-emerald-950/15",
+                    badge: "text-emerald-300 bg-emerald-950/50 border-emerald-800/40",
+                  },
                 ]
-              ).map((row) => (
-                <div key={row.key}>
-                  <label className="flex items-center justify-between text-slate-300 mb-1">
-                    <span className="font-semibold">{row.label}</span>
-                    <span className={`text-[10px] ${row.envOk ? "text-emerald-400" : "text-slate-600"}`}>
-                      {row.envOk ? `.env ✓` : `.env пусто`}
-                    </span>
-                  </label>
-                  <input
-                    type="password"
-                    autoComplete="off"
-                    placeholder={`${row.hint} · или ${row.env}`}
-                    value={llmKeysDraft[row.key]}
-                    onChange={(e) => setLlmKeysDraft((prev) => ({ ...prev, [row.key]: e.target.value }))}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 outline-none focus:border-amber-500/60 font-mono text-[11px]"
-                  />
-                </div>
-              ))}
-              <p className="text-[10px] text-slate-500 leading-relaxed">
-                Режим <strong className="text-slate-400">Все</strong> в шапке: Gemini → NVIDIA → Groq → OpenRouter при сбоях.
-                Ключи не попадают в git (только localStorage / .env).
-              </p>
+              ).map((row) => {
+                const hasBrowserKey = Boolean(llmKeysDraft[row.key]?.trim());
+                return (
+                  <div
+                    key={row.key}
+                    className={`rounded-xl border p-3.5 space-y-2.5 ${row.accent}`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="font-semibold text-slate-100 text-[12px]">{row.label}</label>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {hasBrowserKey && (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded-md border border-emerald-700/50 bg-emerald-950/40 text-emerald-300">
+                            в браузере
+                          </span>
+                        )}
+                        <span className={`text-[9px] px-1.5 py-0.5 rounded-md border ${row.badge}`}>
+                          {row.envOk ? ".env ✓" : ".env пусто"}
+                        </span>
+                      </div>
+                    </div>
+                    <input
+                      type="password"
+                      autoComplete="off"
+                      placeholder={`Ключ · ${row.hint}`}
+                      value={llmKeysDraft[row.key]}
+                      onChange={(e) => setLlmKeysDraft((prev) => ({ ...prev, [row.key]: e.target.value }))}
+                      className="w-full bg-slate-950/80 border border-slate-700/70 rounded-lg px-3 py-2.5 text-slate-100 outline-none focus:border-amber-500/70 focus:ring-1 focus:ring-amber-500/20 font-mono text-[11px] placeholder:text-slate-600"
+                    />
+                    <p className="text-[10px] text-slate-500">
+                      Переменная окружения: <code className="text-slate-400">{row.env}</code>
+                    </p>
+                  </div>
+                );
+              })}
+
+              <div className="rounded-xl border border-slate-800 bg-slate-950/50 px-3.5 py-3 text-[10px] text-slate-500 leading-relaxed">
+                Режим <strong className="text-slate-300">Автовыбор</strong> в шапке сам перебирает сервисы при сбоях:
+                Gemini → NVIDIA → Groq → OpenRouter. Ключи не попадают в git.
+              </div>
             </div>
-            <div className="p-4 border-t border-slate-800 flex justify-between gap-2">
+
+            <div className="px-5 py-4 border-t border-slate-800 bg-slate-950/50 flex justify-between gap-2 shrink-0">
               <button
                 type="button"
                 onClick={() => {
                   setLlmKeysDraft({ gemini: "", nvidia: "", groq: "", openrouter: "" });
                 }}
-                className="px-3 py-2 text-slate-400 hover:text-red-300 text-xs cursor-pointer"
+                className="px-3 py-2 text-slate-400 hover:text-red-300 text-xs cursor-pointer rounded-lg hover:bg-red-950/20 transition-colors"
               >
                 Очистить поля
               </button>
               <div className="flex gap-2">
-                <button type="button" onClick={() => setShowLlmSettings(false)} className="px-3 py-2 text-slate-400 hover:text-white text-xs cursor-pointer">
+                <button
+                  type="button"
+                  onClick={() => setShowLlmSettings(false)}
+                  className="px-3.5 py-2 text-slate-300 hover:text-white text-xs cursor-pointer rounded-lg border border-slate-700 hover:bg-slate-800 transition-colors"
+                >
                   Отмена
                 </button>
                 <button
                   type="button"
                   onClick={saveLlmSettings}
-                  className="px-4 py-2 bg-amber-600/80 hover:bg-amber-500 text-white text-xs font-semibold rounded-lg cursor-pointer"
+                  className="px-5 py-2 bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 text-white text-xs font-semibold rounded-lg cursor-pointer shadow-lg shadow-amber-900/30 transition-all"
                   id="llm-settings-save"
                 >
-                  Сохранить
+                  Сохранить ключи
                 </button>
               </div>
             </div>

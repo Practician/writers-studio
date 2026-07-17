@@ -8,7 +8,7 @@
 //   LLM_PROVIDER = gemini | nvidia | groq | openrouter | auto
 //   NVIDIA_*, GROQ_DEFAULT_MODEL, OPENROUTER_DEFAULT_MODEL, *_FALLBACK_MODELS
 //
-// auto: Gemini → NVIDIA → Groq → OpenRouter (кто сконфигурирован).
+// auto: Groq → Gemini → OpenRouter → NVIDIA (скорость сначала; NVIDIA часто долгий/таймауты).
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { GoogleGenAI } from "@google/genai";
@@ -76,12 +76,19 @@ const DEFAULT_GROQ_BASE = "https://api.groq.com/openai/v1";
 const DEFAULT_OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 // DeepSeek v4 flash — лучшая RU-проза по локальному бенчмарку NVIDIA.
 const DEFAULT_NVIDIA_MODEL = "deepseek-ai/deepseek-v4-flash";
+// Live humanize benchmark 2026-07: 3.5-flash дал лучшее совпадение локальной
+// оценки с внешней; 2.0 и 2.5 в этом аккаунте падали в quota/404.
 const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
 const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
 // openrouter/auto часто платный (402 без credits); free-router — openrouter/free
 const DEFAULT_OPENROUTER_MODEL = "openrouter/free";
-const DEFAULT_NVIDIA_TIMEOUT_MS = 90_000;
+/** Короткий таймаут: 90 с × 15 моделей = вечность; fail-fast → следующий провайдер. */
+const DEFAULT_NVIDIA_TIMEOUT_MS = 40_000;
 const DEFAULT_NVIDIA_COOLDOWN_MS = 90_000;
+/** Сколько живых моделей NVIDIA пробовать за один вызов (остальные — только если все в cooldown). */
+const NVIDIA_MAX_MODEL_ATTEMPTS = 3;
+/** Подряд 503 ResourceExhausted → сдаём весь NVIDIA-провайдер, не ждём всю цепочку. */
+const NVIDIA_MAX_CAPACITY_FAILS = 2;
 /**
  * Groq free on_demand: TPM ~6000 на мелких моделях.
  * Requested ≈ prompt_tokens + max_tokens; держим max_tokens низко.
@@ -159,12 +166,15 @@ const nvidiaModelCooldownUntil = new Map<string, number>();
 /** Модели с 404/410 — не долбим до перезапуска процесса. */
 const nvidiaModelDead = new Set<string>();
 
+/** Порядок по актуальной доступности; uniquePreserve уберёт повтор primary. */
 const BUILTIN_GEMINI_FALLBACKS = [
   "gemini-3.5-flash",
-  "gemini-2.5-flash",
   "gemini-2.0-flash",
   "gemini-2.5-flash-lite",
+  "gemini-2.5-flash",
 ];
+
+const DEFAULT_GEMINI_TIMEOUT_MS = 45_000;
 
 function env(name: string, fallback = ""): string {
   return (process.env[name] ?? fallback).trim();
@@ -274,6 +284,12 @@ export function nvidiaRequestTimeoutMs(): number {
   const raw = Number(env("NVIDIA_REQUEST_TIMEOUT_MS", String(DEFAULT_NVIDIA_TIMEOUT_MS)));
   if (!Number.isFinite(raw) || raw < 5_000) return DEFAULT_NVIDIA_TIMEOUT_MS;
   return Math.min(Math.floor(raw), 600_000);
+}
+
+export function geminiRequestTimeoutMs(): number {
+  const raw = Number(env("GEMINI_REQUEST_TIMEOUT_MS", String(DEFAULT_GEMINI_TIMEOUT_MS)));
+  if (!Number.isFinite(raw) || raw < 5_000) return DEFAULT_GEMINI_TIMEOUT_MS;
+  return Math.min(Math.floor(raw), 300_000);
 }
 
 export function nvidiaCooldownMs(): number {
@@ -429,11 +445,12 @@ export function defaultModelForProvider(preference?: ProviderPreference): string
   if (pref === "groq") return groqDefaultModel();
   if (pref === "openrouter") return openrouterDefaultModel();
   if (pref === "gemini") return DEFAULT_GEMINI_MODEL;
+  // auto: тот же приоритет, что resolveProvider
   if (collectGeminiKeys().length > 0) return DEFAULT_GEMINI_MODEL;
-  if (collectNvidiaKeys().length > 0) return nvidiaDefaultModel();
   if (collectGroqKeys().length > 0) return groqDefaultModel();
   if (collectOpenrouterKeys().length > 0) return openrouterDefaultModel();
-  return DEFAULT_GEMINI_MODEL;
+  if (collectNvidiaKeys().length > 0) return nvidiaDefaultModel();
+  return DEFAULT_GROQ_MODEL;
 }
 
 export function resolveSelectedModel(
@@ -469,11 +486,20 @@ export function resolveSelectedModel(
     }
     return raw;
   }
+  // auto: НЕ цепляемся за deepseek/qwen из старого UI — иначе снова 60 с на NVIDIA.
+  // Имя модели учитываем только для быстрых/явных семейств; иначе — приоритет ключей.
   if (!raw) return defaultModelForProvider("auto");
-  if (isOpenRouterModelName(raw)) return raw.replace(/^openrouter:/i, "");
-  if (isGroqModelName(raw)) return raw.replace(/^groq:/i, "");
-  if (isNvidiaModelName(raw)) return raw.replace(/^nvidia:/i, "");
-  return raw;
+  if (isGroqModelName(raw) && collectGroqKeys().length > 0) {
+    return raw.replace(/^groq:/i, "");
+  }
+  if (raw.toLowerCase().startsWith("gemini") && collectGeminiKeys().length > 0) {
+    return raw;
+  }
+  if (isOpenRouterModelName(raw) && collectOpenrouterKeys().length > 0
+    && !isNvidiaModelName(raw)) {
+    return raw.replace(/^openrouter:/i, "");
+  }
+  return defaultModelForProvider("auto");
 }
 
 export function getLlmStatus(): LlmStatus {
@@ -627,21 +653,20 @@ export function resolveProvider(model?: string): LlmProviderId {
     return pref;
   }
 
-  // auto: эвристика по имени модели
+  // auto: имя модели НЕ должно перетягивать на NVIDIA (deepseek/*), пока есть Gemini/Groq.
+  // Иначе UI/кэш шлёт deepseek-v4-flash и снова жжёт 60 с × N моделей.
   if (explicit) {
-    if (explicit.toLowerCase().startsWith("gemini")) {
-      assertHasKeys("gemini");
-      return "gemini";
-    }
     if (isGroqModelName(explicit) && hasGroq) return "groq";
-    if (isOpenRouterModelName(explicit) && hasOr) return "openrouter";
-    if (isNvidiaModelName(explicit) && hasNvidia) return "nvidia";
+    if (explicit.toLowerCase().startsWith("gemini") && hasGemini) return "gemini";
+    if (isOpenRouterModelName(explicit) && hasOr && !isNvidiaModelName(explicit)) return "openrouter";
+    // nvidia-имена (org/model) игнорируем, если есть быстрый провайдер
   }
 
+  // auto: качество прозы и согласие двух детекторов важнее минимальной задержки.
   if (hasGemini) return "gemini";
-  if (hasNvidia) return "nvidia";
   if (hasGroq) return "groq";
   if (hasOr) return "openrouter";
+  if (hasNvidia) return "nvidia";
   throw new Error(
     "Не задан ни один API-ключ. Откройте «Настройки ИИ» в шапке или пропишите ключи в .env "
     + "(GEMINI / NVIDIA / GROQ / OPENROUTER).",
@@ -687,12 +712,12 @@ async function callNvidiaOnce(
   let userContent = params.contents;
   if (wantsJson) userContent += schemaHint(params.responseSchema);
 
-  // Длинная генерация — больше таймаут; короткий JSON/план — быстрее failover.
+  // Fail-fast: длинные таймауты (60–90 с) × цепочка моделей = минуты «тупняка».
   const baseTimeout = nvidiaRequestTimeoutMs();
   const maxTok = params.maxOutputTokens ?? 8192;
   const timeoutMs = wantsJson
-    ? Math.min(baseTimeout, 45_000)
-    : Math.min(Math.max(baseTimeout, 60_000), 60_000 + Math.floor(maxTok / 8));
+    ? Math.min(baseTimeout, 25_000)
+    : Math.min(baseTimeout, 40_000);
 
   const body: Record<string, unknown> = {
     model,
@@ -780,6 +805,8 @@ async function generateViaNvidia(params: LlmGenerateParams): Promise<LlmGenerate
   let lastError: any = null;
   let attempts = 0;
   let skippedCooldown = 0;
+  let liveAttempts = 0;
+  let capacityFails = 0;
 
   for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
     const model = models[modelIndex];
@@ -787,6 +814,13 @@ async function generateViaNvidia(params: LlmGenerateParams): Promise<LlmGenerate
       skippedCooldown += 1;
       continue;
     }
+    if (liveAttempts >= NVIDIA_MAX_MODEL_ATTEMPTS) {
+      console.warn(
+        `NVIDIA: лимит ${NVIDIA_MAX_MODEL_ATTEMPTS} моделей за вызов — сдаём провайдер (дальше auto → Groq/Gemini).`,
+      );
+      break;
+    }
+    liveAttempts += 1;
 
     for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
       const jsonModes = wantsJson ? [true, false] : [false];
@@ -831,6 +865,18 @@ async function generateViaNvidia(params: LlmGenerateParams): Promise<LlmGenerate
             if (status === 503 || status === 429 || status === 408 || status === 502 || status === 504
               || /ResourceExhausted|capacity|timeout|overloaded/i.test(body + String(error?.message || ""))) {
               markNvidiaModelCooldown(model, String(status || "busy"));
+            }
+            // Worker limit / total capacity — нет смысла перебирать 10 моделей по 40 с
+            if (status === 503 || /ResourceExhausted|Worker local total request limit|capacity/i.test(body)) {
+              capacityFails += 1;
+              if (capacityFails >= NVIDIA_MAX_CAPACITY_FAILS) {
+                const err = new Error(
+                  `NVIDIA API: capacity exhausted (${capacityFails}×) — переключаемся на другой провайдер`,
+                );
+                (err as any).status = 503;
+                (err as any).nvidiaChainTried = models.slice(0, modelIndex + 1);
+                throw err;
+              }
             }
             break; // next model
           }
@@ -1074,18 +1120,42 @@ async function callGeminiOnce(
   modelName: string,
   params: LlmGenerateParams,
 ): Promise<LlmGenerateResult> {
-  const response = await client.models.generateContent({
+  const timeoutMs = geminiRequestTimeoutMs();
+  // thinkingBudget: 0 — иначе gemini-*-flash с «мышлением» висит десятки секунд на коротких запросах
+  const config: Record<string, unknown> = {
+    systemInstruction: params.systemInstruction,
+    temperature: params.temperature ?? 0.7,
+    responseMimeType: params.responseMimeType,
+    responseSchema: params.responseSchema as any,
+    maxOutputTokens: params.maxOutputTokens,
+    thinkingConfig: { thinkingBudget: 0 },
+  };
+
+  const generatePromise = client.models.generateContent({
     model: modelName,
     contents: params.contents,
-    config: {
-      systemInstruction: params.systemInstruction,
-      temperature: params.temperature ?? 0.7,
-      responseMimeType: params.responseMimeType,
-      responseSchema: params.responseSchema as any,
-      maxOutputTokens: params.maxOutputTokens,
-      ...(modelName.includes("2.5") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
-    },
+    config: config as any,
   });
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(`Gemini timeout after ${timeoutMs}ms (${modelName})`);
+      (err as any).status = 408;
+      reject(err);
+    }, timeoutMs);
+  });
+
+  let response: Awaited<ReturnType<typeof client.models.generateContent>>;
+  try {
+    response = await Promise.race([generatePromise, timeoutPromise]);
+  } catch (error: any) {
+    // если generate всё же догонит — игнор; таймаут/ошибка пробрасываем
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+
   const finishReason = String((response as any)?.candidates?.[0]?.finishReason || "");
   if (/MAX_TOKENS|LENGTH/i.test(finishReason)) {
     throw new Error("Ответ модели был обрезан по лимиту токенов");
@@ -1133,6 +1203,12 @@ async function generateViaGemini(params: LlmGenerateParams): Promise<LlmGenerate
           causeCode === "ECONNRESET" || causeCode === "ETIMEDOUT" || causeCode === "ECONNREFUSED"
           || message.includes("terminated") || message.includes("fetch failed")
         );
+        // timeout 408 → сразу следующая модель, без 2×retry (иначе 45с×3)
+        if (status === 408 || /timeout/i.test(String(error?.message || ""))) {
+          console.warn(`Gemini «${model}» timeout → следующая…`);
+          break;
+        }
+
         const isRetryable = status === 503 || status === 429 || status === 500 || isNetworkError;
         if (isRetryable && attempt < maxRetries) {
           const delayMs = Math.min(1000 * 2 ** attempt, 6000) + Math.random() * 400;
@@ -1158,7 +1234,7 @@ async function generateViaGemini(params: LlmGenerateParams): Promise<LlmGenerate
 
 /**
  * Главная точка входа.
- * auto: цепочка провайдеров Gemini → NVIDIA → Groq → OpenRouter.
+ * auto: цепочка Gemini → Groq → OpenRouter → NVIDIA.
  * Иначе только выбранный провайдер (свои модели внутри).
  */
 export async function llmGenerate(params: LlmGenerateParams): Promise<LlmGenerateResult> {
@@ -1200,25 +1276,47 @@ export async function llmGenerate(params: LlmGenerateParams): Promise<LlmGenerat
     });
   };
 
-  // Жёсткий выбор провайдера — без кросс-failover
+  // Жёсткий выбор: только этот провайдер, НО nvidia при полной смерти
+  // мягко уходит на Groq/Gemini (иначе UI «NVIDIA» = 10 минут 503).
   if (pref !== "auto") {
-    return runOne(preferred);
+    try {
+      console.warn(`LLM → ${preferred} (pref=${pref}, model=${params.model || "default"})`);
+      return await runOne(preferred);
+    } catch (error: any) {
+      if (pref === "nvidia") {
+        const soft: LlmProviderId[] = ["groq", "gemini", "openrouter"];
+        for (const id of soft) {
+          if (!has[id]) continue;
+          try {
+            return await runOne(
+              id,
+              `NVIDIA недоступен → аварийный fallback ${id}: ${String(error?.message || error).slice(0, 80)}`,
+            );
+          } catch (softErr: any) {
+            console.warn(`Fallback ${id} тоже упал: ${String(softErr?.message || softErr).slice(0, 100)}`);
+          }
+        }
+      }
+      throw error;
+    }
   }
 
-  // auto: сначала preferred (по модели), затем остальные
+  // auto: Gemini первым по результату live-бенчмарка; NVIDIA — только в хвосте
   const order = uniquePreserve([
-    preferred,
+    preferred === "nvidia" ? "gemini" : preferred,
     "gemini",
-    "nvidia",
     "groq",
     "openrouter",
+    "nvidia",
   ]) as LlmProviderId[];
+
+  console.warn(`LLM auto order: ${order.filter((id) => has[id]).join(" → ")} (model=${params.model || "—"})`);
 
   let lastError: any = null;
   for (const id of order) {
     if (!has[id]) continue;
     try {
-      if (id !== preferred) {
+      if (id !== order.find((x) => has[x])) {
         return await runOne(id, `auto-failover → ${id}…`);
       }
       return await runOne(id);

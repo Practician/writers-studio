@@ -3,6 +3,8 @@ node_modules/
 build/
 dist/
 coverage/
+test-artifacts/
+.claude/
 .DS_Store
 *.log
 .env*

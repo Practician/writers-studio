@@ -3,10 +3,14 @@ import test from "node:test";
 import {
   buildAdaptiveWritingGuidance,
   createAdaptiveProfile,
+  fitFusionWeight,
   learnFromDetectorReport,
+  loadAdaptiveProfile,
+  scoreCalibratedLocalDetector,
   scoreWithAdaptiveProfile,
 } from "../src/lib/adaptiveDetector";
 import { DetectorLabel, validateDetectorReport } from "../src/lib/detectorReport";
+import { LABYRINTH_STORY_ID } from "../src/data/labyrinthCanon";
 
 const humanText = [
   "Я вошёл в коридор и сразу задел плечом косяк. Было обидно, хотя винить, кроме себя, некого.",
@@ -83,4 +87,41 @@ test("adaptive learning ignores UNKNOWN and very short segments", () => {
   assert.equal(learned.learnedHuman, 0);
   assert.equal(learned.learnedAi, 0);
   assert.equal(learned.ignored, 2);
+});
+
+test("calibrated local detector fuses style and aiTell stamps", () => {
+  const learned = learnFromDetectorReport(createAdaptiveProfile("story-4"), report([
+    { label: "HUMAN", text: humanText },
+    { label: "AI", text: aiText },
+  ])).profile;
+  const fusion = fitFusionWeight(
+    [
+      { text: humanText, human: true },
+      { text: aiText, human: false },
+      {
+        text: "Это был не просто коридор. Волна ужаса накрыла меня, и время словно остановилось. Стоит отметить важное.",
+        human: false,
+      },
+    ],
+    learned,
+  );
+  const profile = { ...learned, version: 2 as const, fusion };
+  const dirty = scoreCalibratedLocalDetector(
+    "Это был не просто коридор. Волна ужаса накрыла меня, и время словно остановилось. В современном мире стоит отметить важное.",
+    profile,
+  );
+  assert.ok(dirty);
+  assert.ok(dirty.calibratedHumanProbability <= 50, `dirty should lean AI, got ${dirty.calibratedHumanProbability}`);
+  assert.equal(dirty.predictedLabel, "AI");
+  assert.ok(dirty.aiTellScore >= 10);
+});
+
+test("labyrinth story loads Yandex-calibrated seed profile", () => {
+  const profile = loadAdaptiveProfile(LABYRINTH_STORY_ID);
+  assert.ok(profile.human.count >= 3, `expected seed HUMAN examples, got ${profile.human.count}`);
+  assert.ok(profile.ai.count >= 3, `expected seed AI examples, got ${profile.ai.count}`);
+  assert.ok(profile.fusion, "fusion weights from Yandex calibration");
+  const score = scoreCalibratedLocalDetector(humanText + " " + humanText, profile);
+  assert.ok(score);
+  assert.ok(typeof score.calibratedHumanProbability === "number");
 });

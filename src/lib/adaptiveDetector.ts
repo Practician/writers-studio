@@ -1,5 +1,7 @@
 import { computeStyleStats, hashText, wordsOf } from "./authorAudit";
 import { DetectorReport } from "./detectorReport";
+import { aiTellScore } from "../../server/humanStyle";
+import { LABYRINTH_ADAPTIVE_DETECTOR_SEED } from "../data/labyrinth/adaptive-detector-seed";
 
 const STORAGE_PREFIX = "writers-studio-adaptive-detector-v1:";
 const MAX_REPORT_HASHES = 100;
@@ -26,13 +28,27 @@ export interface AdaptiveCentroid {
   m2: FeatureVector;
 }
 
+/** Веса fusion: style-adaptive (Яндекс-сегменты) + локальный aiTell (штампы). */
+export interface AdaptiveFusionConfig {
+  /** Доля style-adaptive в итоговом HUMAN% (0…1). Остальное — из (100 − aiTell). */
+  adaptiveWeight: number;
+  /** Порог HUMAN (по умолчанию 50). */
+  humanThreshold: number;
+  /** Источник калибровки (для UI). */
+  source?: string;
+  calibratedAt?: string;
+  /** LOO accuracy на сегментах Яндекса при калибровке. */
+  looAccuracy?: number;
+}
+
 export interface AdaptiveDetectorProfile {
-  version: 1;
+  version: 1 | 2;
   storyId: string;
   updatedAt: number;
   reportHashes: string[];
   human: AdaptiveCentroid;
   ai: AdaptiveCentroid;
+  fusion?: AdaptiveFusionConfig;
 }
 
 export interface AdaptiveLearningResult {
@@ -52,6 +68,16 @@ export interface AdaptiveScore {
   aiExamples: number;
 }
 
+export interface CalibratedLocalScore extends AdaptiveScore {
+  /** Итог после fusion с aiTell (калибровка под Яндекс). */
+  calibratedHumanProbability: number;
+  adaptiveHumanProbability: number;
+  aiTellScore: number;
+  aiTellBurstiness: number;
+  fusionWeight: number;
+  predictedLabel: "HUMAN" | "AI";
+}
+
 function zeroVector(): FeatureVector {
   return Object.fromEntries(ADAPTIVE_FEATURES.map((feature) => [feature, 0])) as FeatureVector;
 }
@@ -62,7 +88,7 @@ function emptyCentroid(): AdaptiveCentroid {
 
 export function createAdaptiveProfile(storyId: string): AdaptiveDetectorProfile {
   return {
-    version: 1,
+    version: 2,
     storyId,
     updatedAt: Date.now(),
     reportHashes: [],
@@ -180,6 +206,84 @@ export function scoreWithAdaptiveProfile(text: string, profile: AdaptiveDetector
   };
 }
 
+export const DEFAULT_FUSION: AdaptiveFusionConfig = {
+  adaptiveWeight: 0.45,
+  humanThreshold: 50,
+  source: "default",
+};
+
+/** aiTell 0…100 (выше = больше «ИИ») → HUMAN% 100…0 */
+export function humanProbabilityFromAiTell(score: number): number {
+  const clamped = Math.max(0, Math.min(100, score));
+  // Мягкая кривая: score 0 → 100, 12 → ~78, 30 → ~48, 60 → ~18
+  return Math.round(100 / (1 + Math.exp((clamped - 22) / 10)));
+}
+
+/**
+ * Локальный детектор, откалиброванный под Яндекс:
+ * style-centroid (сегменты HUMAN/AI из отчётов) + каталог штампов aiTell.
+ */
+export function scoreCalibratedLocalDetector(
+  text: string,
+  profile: AdaptiveDetectorProfile,
+): CalibratedLocalScore | null {
+  const adaptive = scoreWithAdaptiveProfile(text, profile);
+  if (!adaptive) return null;
+  const tell = aiTellScore(text);
+  const fusion = profile.fusion ?? DEFAULT_FUSION;
+  const w = Math.max(0, Math.min(1, fusion.adaptiveWeight));
+  const fromTell = humanProbabilityFromAiTell(tell.score);
+  const calibrated = Math.round(w * adaptive.humanProbability + (1 - w) * fromTell);
+  const threshold = fusion.humanThreshold ?? 50;
+  return {
+    ...adaptive,
+    calibratedHumanProbability: calibrated,
+    adaptiveHumanProbability: adaptive.humanProbability,
+    aiTellScore: tell.score,
+    aiTellBurstiness: tell.burstiness,
+    fusionWeight: w,
+    predictedLabel: calibrated >= threshold ? "HUMAN" : "AI",
+  };
+}
+
+/** Подбор adaptiveWeight по размеченным сегментам (максимум accuracy). */
+export function fitFusionWeight(
+  samples: Array<{ text: string; human: boolean }>,
+  profile: AdaptiveDetectorProfile,
+): AdaptiveFusionConfig {
+  let bestW = DEFAULT_FUSION.adaptiveWeight;
+  let bestAcc = -1;
+  let bestThreshold = 50;
+  for (let w = 0; w <= 100; w += 5) {
+    const weight = w / 100;
+    for (const threshold of [45, 50, 55]) {
+      let ok = 0;
+      for (const sample of samples) {
+        const adaptive = scoreWithAdaptiveProfile(sample.text, profile);
+        if (!adaptive) continue;
+        const tell = aiTellScore(sample.text);
+        const fromTell = humanProbabilityFromAiTell(tell.score);
+        const calibrated = weight * adaptive.humanProbability + (1 - weight) * fromTell;
+        const predHuman = calibrated >= threshold;
+        if (predHuman === sample.human) ok += 1;
+      }
+      const acc = samples.length ? ok / samples.length : 0;
+      if (acc > bestAcc) {
+        bestAcc = acc;
+        bestW = weight;
+        bestThreshold = threshold;
+      }
+    }
+  }
+  return {
+    adaptiveWeight: bestW,
+    humanThreshold: bestThreshold,
+    source: "yandex-loo-fit",
+    calibratedAt: new Date().toISOString(),
+    looAccuracy: bestAcc,
+  };
+}
+
 function range(value: number, spread: number, digits = 1): string {
   const low = Math.max(0, value - spread).toFixed(digits);
   const high = (value + spread).toFixed(digits);
@@ -216,19 +320,53 @@ export function buildAdaptiveWritingGuidance(profile: AdaptiveDetectorProfile): 
 function isValidProfile(value: unknown, storyId: string): value is AdaptiveDetectorProfile {
   if (!value || typeof value !== "object") return false;
   const profile = value as Partial<AdaptiveDetectorProfile>;
-  return profile.version === 1 && profile.storyId === storyId && Array.isArray(profile.reportHashes)
+  const versionOk = profile.version === 1 || profile.version === 2;
+  return versionOk && profile.storyId === storyId && Array.isArray(profile.reportHashes)
     && Boolean(profile.human && profile.ai)
     && typeof profile.human?.count === "number" && typeof profile.ai?.count === "number";
 }
 
+/** Seed Яндекс-калибровки для «Лабиринт». */
+function labyrinthSeedProfile(storyId: string): AdaptiveDetectorProfile | null {
+  const seed = LABYRINTH_ADAPTIVE_DETECTOR_SEED;
+  if (!seed || seed.storyId !== storyId || !isValidProfile(seed, seed.storyId)) return null;
+  return {
+    ...seed,
+    human: { ...seed.human, mean: { ...seed.human.mean }, m2: { ...seed.human.m2 } },
+    ai: { ...seed.ai, mean: { ...seed.ai.mean }, m2: { ...seed.ai.m2 } },
+    reportHashes: [...seed.reportHashes],
+    fusion: seed.fusion ? { ...seed.fusion } : undefined,
+  };
+}
+
+export function resolveSeedAdaptiveProfile(storyId: string): AdaptiveDetectorProfile | null {
+  return labyrinthSeedProfile(storyId);
+}
+
 export function loadAdaptiveProfile(storyId: string): AdaptiveDetectorProfile {
-  if (typeof localStorage === "undefined") return createAdaptiveProfile(storyId);
-  try {
-    const parsed = JSON.parse(localStorage.getItem(`${STORAGE_PREFIX}${storyId}`) || "null");
-    return isValidProfile(parsed, storyId) ? parsed : createAdaptiveProfile(storyId);
-  } catch {
-    return createAdaptiveProfile(storyId);
+  const seed = resolveSeedAdaptiveProfile(storyId);
+
+  if (typeof localStorage !== "undefined") {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(`${STORAGE_PREFIX}${storyId}`) || "null");
+      if (isValidProfile(parsed, storyId)) {
+        // Пустой user-профиль → подставить seed (калибровка Яндекса)
+        if ((parsed.human.count + parsed.ai.count) === 0 && seed) {
+          return seed;
+        }
+        // Есть user-данные, но нет fusion → унаследовать веса из seed
+        if (!parsed.fusion && seed?.fusion) {
+          return { ...parsed, version: 2, fusion: { ...seed.fusion } };
+        }
+        return parsed;
+      }
+    } catch {
+      /* fall through */
+    }
   }
+
+  if (seed) return seed;
+  return createAdaptiveProfile(storyId);
 }
 
 export function saveAdaptiveProfile(profile: AdaptiveDetectorProfile): void {
@@ -238,5 +376,5 @@ export function saveAdaptiveProfile(profile: AdaptiveDetectorProfile): void {
 
 export function resetAdaptiveProfile(storyId: string): AdaptiveDetectorProfile {
   if (typeof localStorage !== "undefined") localStorage.removeItem(`${STORAGE_PREFIX}${storyId}`);
-  return createAdaptiveProfile(storyId);
+  return resolveSeedAdaptiveProfile(storyId) ?? createAdaptiveProfile(storyId);
 }

@@ -33,8 +33,10 @@ import {
   loadAdaptiveProfile,
   resetAdaptiveProfile,
   saveAdaptiveProfile,
+  scoreCalibratedLocalDetector,
   scoreWithAdaptiveProfile,
 } from "../lib/adaptiveDetector";
+import { YANDEX_LOCAL_GAP } from "../../server/humanStyle";
 import { diffParagraphs } from "../lib/textDiff";
 import {
   listAuthorRevisions,
@@ -129,7 +131,7 @@ export default function AuthorEditorPanel({
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileStatus, setProfileStatus] = useState("");
   const [scope, setScope] = useState<Scope>(selection ? "selection" : "chapter");
-  const [strength, setStrength] = useState<Strength>("balanced");
+  const [strength, setStrength] = useState<Strength>("deep");
   const [instructions, setInstructions] = useState("");
   const [detectorReport, setDetectorReport] = useState<DetectorReport | null>(null);
   const [detectorSegmentIndex, setDetectorSegmentIndex] = useState<number | null>(null);
@@ -228,6 +230,10 @@ export default function AuthorEditorPanel({
   );
   const adaptiveScore = useMemo(
     () => scoreWithAdaptiveProfile(sourceText, adaptiveProfile),
+    [adaptiveProfile, sourceText],
+  );
+  const calibratedScore = useMemo(
+    () => scoreCalibratedLocalDetector(sourceText, adaptiveProfile),
     [adaptiveProfile, sourceText],
   );
 
@@ -648,7 +654,7 @@ export default function AuthorEditorPanel({
                         })),
                         authorSample: sample,
                         voiceSheet,
-                        humanizeDepth: "balanced",
+                        humanizeDepth: "maximum",
                         adaptiveStyleGuidance: buildAdaptiveWritingGuidance(adaptiveProfile),
                         ...(llmApiFields || { model: selectedModel, llmProvider }),
                       }),
@@ -699,7 +705,20 @@ export default function AuthorEditorPanel({
             )}
           </div>
           <p className="text-violet-300/75">
-            Опыт: HUMAN {adaptiveProfile.human.count} · AI {adaptiveProfile.ai.count}. Учится только на совпавших отчётах.
+            Опыт: HUMAN {adaptiveProfile.human.count} · AI {adaptiveProfile.ai.count}.
+            {adaptiveProfile.fusion
+              ? ` Калибровка Яндекс: w=${adaptiveProfile.fusion.adaptiveWeight}`
+                + (adaptiveProfile.fusion.looAccuracy != null
+                  ? ` · LOO ${(adaptiveProfile.fusion.looAccuracy * 100).toFixed(0)}%`
+                  : "")
+              : " Учится на совпавших отчётах."}
+          </p>
+          <p
+            className="text-violet-400/70 leading-snug"
+            title={YANDEX_LOCAL_GAP.reasonsNot100.join("\n")}
+          >
+            Локальный ≠ 100% Яндекса (LOO ~{Math.round(YANDEX_LOCAL_GAP.stats.looAccuracyApprox * 100)}%):
+            ловит стаккато/UI/штампы; latent style Яндекса не воспроизводится полностью.
           </p>
           {adaptiveStatus && <p>{adaptiveStatus}</p>}
         </div>
@@ -717,7 +736,17 @@ export default function AuthorEditorPanel({
             </span>
           )}
         </div>
-        {adaptiveScore && (
+        {calibratedScore && (
+          <div className="flex items-center justify-between gap-2 rounded border border-violet-900/50 bg-violet-950/20 px-2 py-1.5 text-[10px]">
+            <span className="text-violet-200" title="Fusion: стиль по сегментам Яндекса + aiTell-штампы">
+              локально (Яндекс-калибр.): {calibratedScore.calibratedHumanProbability}% HUMAN → {calibratedScore.predictedLabel}
+            </span>
+            <span className="text-violet-400" title="style-only / aiTell">
+              style {calibratedScore.adaptiveHumanProbability}% · tell {calibratedScore.aiTellScore}
+            </span>
+          </div>
+        )}
+        {!calibratedScore && adaptiveScore && (
           <div className="flex items-center justify-between gap-2 rounded border border-violet-900/50 bg-violet-950/20 px-2 py-1.5 text-[10px]">
             <span className="text-violet-200">адаптивно: {adaptiveScore.humanProbability}% HUMAN</span>
             <span className="text-violet-400" title="Уверенность растёт с числом размеченных сегментов">

@@ -11,6 +11,8 @@ export interface StoredLlmKeys {
 
 const PROVIDER_LS = "writers_studio_llm_provider";
 const KEYS_LS = "writers_studio_llm_keys_v1";
+/** Одноразовая миграция: старый default NVIDIA → auto (Groq-first). */
+const PROVIDER_MIGRATE_V3 = "writers_studio_llm_provider_v3_groq_first";
 
 export const EMPTY_LLM_KEYS: StoredLlmKeys = {
   gemini: "",
@@ -21,6 +23,16 @@ export const EMPTY_LLM_KEYS: StoredLlmKeys = {
 
 export function loadLlmProvider(): LlmProviderChoice {
   const saved = localStorage.getItem(PROVIDER_LS);
+
+  // Раньше UI/env часто оставляли «nvidia» — запросы шли в deepseek 60с×N, игнорируя Groq.
+  if (!localStorage.getItem(PROVIDER_MIGRATE_V3)) {
+    localStorage.setItem(PROVIDER_MIGRATE_V3, "1");
+    if (!saved || saved === "nvidia") {
+      localStorage.setItem(PROVIDER_LS, "auto");
+      return "auto";
+    }
+  }
+
   if (
     saved === "gemini"
     || saved === "nvidia"
@@ -114,10 +126,10 @@ export function defaultModelForProvider(
     return status?.groqDefaultModel || "llama-3.3-70b-versatile";
   }
   if (provider === "openrouter") {
-    return status?.openrouterDefaultModel || "openrouter/auto";
+    return status?.openrouterDefaultModel || "openrouter/free";
   }
   if (provider === "gemini") return "gemini-3.5-flash";
-  // auto — сервер сам выберет; клиент шлёт gemini как «мягкий» default
+  // auto — Gemini первым: лучший результат максимального humanize-бенчмарка.
   return "gemini-3.5-flash";
 }
 
@@ -127,6 +139,6 @@ export function providerLabel(provider: LlmProviderChoice): string {
     case "gemini": return "Gemini";
     case "groq": return "Groq";
     case "openrouter": return "OpenRouter";
-    case "auto": return "Все";
+    case "auto": return "Автовыбор";
   }
 }

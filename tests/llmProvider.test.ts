@@ -39,12 +39,48 @@ test("provider preference reads env", () => {
 
 test("resolveProvider respects explicit nvidia model when key present", () => {
   const had = process.env.NVIDIA_API_KEY;
+  const hadGroq = process.env.GROQ_API_KEY;
+  const hadGem = process.env.GEMINI_API_KEY;
+  const hadOr = process.env.OPENROUTER_API_KEY;
   process.env.NVIDIA_API_KEY = "nvapi-test";
+  delete process.env.GROQ_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+  delete process.env.OPENROUTER_API_KEY;
   try {
     assert.equal(resolveProvider("meta/llama-3.1-70b-instruct"), "nvidia");
   } finally {
     if (had === undefined) delete process.env.NVIDIA_API_KEY;
     else process.env.NVIDIA_API_KEY = had;
+    if (hadGroq === undefined) delete process.env.GROQ_API_KEY;
+    else process.env.GROQ_API_KEY = hadGroq;
+    if (hadGem === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = hadGem;
+    if (hadOr === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = hadOr;
+  }
+});
+
+test("auto prefers Gemini over stale NVIDIA model names when quality provider is available", async () => {
+  const { runWithLlmRequestContext, resolveProvider: rp, resolveSelectedModel: rsm } = await import("../server/llmProvider");
+  const hadN = process.env.NVIDIA_API_KEY;
+  const hadG = process.env.GROQ_API_KEY;
+  const hadGemini = process.env.GEMINI_API_KEY;
+  process.env.NVIDIA_API_KEY = "nvapi-test";
+  process.env.GROQ_API_KEY = "gsk-test";
+  process.env.GEMINI_API_KEY = "gem-test";
+  try {
+    await runWithLlmRequestContext({ preference: "auto" }, async () => {
+      // Старый UI слал deepseek/* — auto больше не должен цепляться за NVIDIA
+      assert.equal(rp("deepseek-ai/deepseek-v4-flash"), "gemini");
+      assert.ok(!rsm("deepseek-ai/deepseek-v4-flash", "auto").includes("deepseek"));
+    });
+  } finally {
+    if (hadN === undefined) delete process.env.NVIDIA_API_KEY;
+    else process.env.NVIDIA_API_KEY = hadN;
+    if (hadG === undefined) delete process.env.GROQ_API_KEY;
+    else process.env.GROQ_API_KEY = hadG;
+    if (hadGemini === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = hadGemini;
   }
 });
 

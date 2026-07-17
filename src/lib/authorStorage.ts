@@ -30,6 +30,24 @@ function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
+const PROFILE_UPDATED_EVENT = "writers-studio-author-profile-updated";
+
+/** Уведомить другие панели (ИИ-Помощник), что образец/паспорт изменился. */
+export function notifyAuthorProfileUpdated(storyId: string): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(PROFILE_UPDATED_EVENT, { detail: { storyId } }));
+}
+
+export function onAuthorProfileUpdated(handler: (storyId: string) => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  const listener = (event: Event) => {
+    const storyId = (event as CustomEvent<{ storyId?: string }>).detail?.storyId;
+    if (storyId) handler(storyId);
+  };
+  window.addEventListener(PROFILE_UPDATED_EVENT, listener);
+  return () => window.removeEventListener(PROFILE_UPDATED_EVENT, listener);
+}
+
 export async function loadAuthorProfile(storyId: string): Promise<AuthorProfileRecord | undefined> {
   const database = await openDatabase();
   try {
@@ -48,6 +66,7 @@ export async function saveAuthorProfile(profile: AuthorProfileRecord): Promise<v
   } finally {
     database.close();
   }
+  notifyAuthorProfileUpdated(profile.storyId);
 }
 
 export async function deleteAuthorProfile(storyId: string): Promise<void> {
@@ -57,6 +76,7 @@ export async function deleteAuthorProfile(storyId: string): Promise<void> {
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
   });
+  notifyAuthorProfileUpdated(storyId);
 }
 
 export async function saveAuthorRevision(revision: AuthorRevisionRecord): Promise<void> {

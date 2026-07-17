@@ -22,8 +22,18 @@ test("style comparison and text hash are deterministic", () => {
   const sample = "Ну, что ж. Я пошёл дальше!\n\nОднако выбора не было…";
   const comparison = compareStyle(sample, sample);
   assert.equal(comparison.similarity, 100);
+  assert.ok(Object.values(comparison.metricScores).every((score) => score === 100));
+  assert.equal(comparison.weakestMetrics.length, 3);
   assert.equal(hashText(sample), hashText(sample));
   assert.notEqual(hashText(sample), hashText(`${sample}!`));
+});
+
+test("calibrated style score allows natural variance but rejects a flat foreign rhythm", () => {
+  const reference = "Ну, что ж! Я пошёл дальше, хотя ноги давно гудели... Однако выбора не было. Так и шёл.";
+  const close = "Ну что же! Я двинулся дальше, хотя устал ещё час назад... Вот ведь дорога. Иду.";
+  const flat = Array.from({ length: 20 }, (_, index) => `Предложение номер ${index} построено совершенно одинаковым образом.`).join(" ");
+  assert.ok(compareStyle(reference, close).similarity >= 70);
+  assert.ok(compareStyle(reference, flat).similarity < 70);
 });
 
 test("paragraph diff preserves additions and removals", () => {

@@ -6,16 +6,18 @@
  */
 import type { AuthorProfileRecord, AuthorVoiceSheet, Character, Chapter, Story, WorldRule } from "../types";
 import { chapterOrdinal } from "../lib/chapterContext";
+import chapter1Text from "./labyrinth/chapter-1.content";
 import chapter5Text from "./labyrinth/chapter-5.content";
 import chapter6Text from "./labyrinth/chapter-6.content";
 import chapter7Text from "./labyrinth/chapter-7.content";
+import chapter8Text from "./labyrinth/chapter-8.content";
 
 export const LABYRINTH_STORY_ID = "story-labyrinth";
-/** v6: текст гл.7 (сон/NFC/двойная ладонь) в seed; пустой слот 7 заполняется каноном. */
-export const LABYRINTH_CANON_VERSION = 6;
-export const LABYRINTH_CANON_MARKER = `CANON_V${LABYRINTH_CANON_VERSION}_PALM_CH7`;
+/** v10: seed гл.7–8 maximum-human (голос гл.1, без стаккато/UI, Yandex-friendly). */
+export const LABYRINTH_CANON_VERSION = 10;
+export const LABYRINTH_CANON_MARKER = `CANON_V${LABYRINTH_CANON_VERSION}_CH78_MAXHUMAN`;
 /** Маркер образца автора: при смене версии канона профиль перезапишется, если не помечен user: */
-export const LABYRINTH_AUTHOR_SAMPLE_MARKER = `labyrinth-canon-ch5-6-v${LABYRINTH_CANON_VERSION}`;
+export const LABYRINTH_AUTHOR_SAMPLE_MARKER = `labyrinth-canon-ch1-v${LABYRINTH_CANON_VERSION}`;
 
 export function isLabyrinthStory(
   story: Pick<Story, "id" | "title"> & { chapters?: Chapter[] } | null | undefined,
@@ -125,7 +127,7 @@ export const LABYRINTH_WORLD_RULES: WorldRule[] = [
     id: "lr-style",
     title: "Голос и повествование",
     content:
-      "1 лицо, сухой инженерный тон, survival, стиль «дневник» (канон: Word-гл.6 optimal). «Я» умеренно (~3–7 на 100 слов): не в каждое предложение, но не вычищать до нуля. Смешивай полные фразы и короткие бытовые («Подумал, что…», «Не сейчас.»). Конкретика: %, жест, запах, сектор/кольцо — вместо абстрактных выводов. Без тройных петель «и что дальше?». Без «Начну снова», без часов на экране. Без штампов «волна ужаса», «холод по спине». Только русский. Образец стиля: главы 5–6 (authorSample).",
+      "1 лицо, сухой инженерный тон, survival, стиль «дневник» (эталон: авторская глава 1). «Я» используется умеренно. Средняя фраза около 8 слов, примерно четверть фраз короткие; есть разговорные частицы, внутренние вопросы, восклицания и многоточия. Конкретика: %, жест, запах, сектор/кольцо — вместо абстрактных выводов. Без тройных петель «и что дальше?», без пафоса и штампов. Только русский. Образец стиля: глава 1 (authorSample).",
   },
   {
     id: "lr-style-patterns-ch6",
@@ -137,13 +139,19 @@ export const LABYRINTH_WORLD_RULES: WorldRule[] = [
     id: "lr-detector-yandex",
     title: "Нейродетектор (Yandex) — стиль",
     content:
-      "Цель: HUMAN-сегменты, не телеграф и не UI-лог. Связная проза + бытовые мысли. Один проход сцены. Конкретика (жест, заряд %, запах) вместо «приближаюсь к пониманию». Не цепочки «1. метка 2. метка», не CW/CCW/NFC-латиница, не спам «не найдено: N». После генерации: локальный AI-tell (в т.ч. category interface) + при возможности Yandex; AI-сегменты — rewrite_detector_segments, HUMAN не трогать. Эталон: гл.6 optimal.",
+      "Цель: HUMAN-сегменты, не телеграф и не UI-лог. Связная проза + бытовые мысли. Один проход сцены. Конкретика (жест, заряд %, запах) вместо «приближаюсь к пониманию». Не цепочки «1. метка 2. метка», не CW/CCW/NFC-латиница, не спам «не найдено: N». Локальная калибровка сравнивает ритм и голос с авторской главой 1, которая получила 100% HUMAN в Yandex; внешний балл остаётся лишь контрольным измерением.",
   },
   {
     id: "lr-palm-ch7",
     title: "Отпечаток ладони (крючок гл. 7)",
     content:
-      "Одна сцена как гл.6: 20%, сытость → сон (институт-загадка, дом/мама, сон во сне) → явь → телефон к отпечатку → точки у колец/чаши/стены жестом (без квест-лога) → ритм пальцев → двойная ладонь (янтарь) → щель Ур.2. Обход Ур.2, карта, датчики, сбор «до нуля» — в гл.8+. Не откатывать 20%. Не решать кольца с нуля.",
+      "Стык с концом 6: 20%, сытость, «не сейчас», кольца погасли. Одна сцена: сон (институт → дом/мама → сон во сне) → явь → телефон к отпечатку → точки жестом (без квест-лога) → ритм → двойная ладонь (янтарь) → щель Ур.2. Карта/датчики/обход — гл.8+. Не 2%. Не кольца с нуля. Не переигрывать «Число 20».",
+  },
+  {
+    id: "lr-continuity-7-8",
+    title: "Стык глав 7→8 (обязательный)",
+    content:
+      "Конец 7: щель/коридор Ур.2, «Уровень 2» на стене, ~20%, проход мог закрыться. Начало 8: УЖЕ на Ур.2 — зелёные риски, развилки, метки, карта/датчики. НЕ сон, НЕ ладонь, НЕ кольца, НЕ 2%.",
   },
   {
     id: "lr-style-patterns-ch7",
@@ -239,18 +247,13 @@ export const LABYRINTH_CHARACTER: Character = {
 };
 
 /**
- * Образец голоса для humanize / generate: хвост гл.5 + полный текст гл.6 из Word optimal.
- * Уходит в authorSample, чтобы гл.7+ писались в тех же паттернах.
+ * Образец голоса для humanize / generate: авторская глава 1, подтверждённая
+ * внешней проверкой как 100% HUMAN. Это стилевой эталон, а не сюжетная подсказка.
  */
-export const LABYRINTH_AUTHOR_SAMPLE: string = [
-  chapter5Text.trim().slice(-2500),
-  chapter6Text.trim(),
-]
-  .filter(Boolean)
-  .join("\n\n");
+export const LABYRINTH_AUTHOR_SAMPLE: string = chapter1Text.trim();
 
 export const LABYRINTH_STYLE_DESCRIPTION =
-  "Голос канона «Лабиринт» по главам 5–6 (Word optimal): 1 лицо, дневник инженера-студента в survival. Конкретика (заряд %, запах, кольца, ключи), умеренное «я», без пафоса и без телеграфа. Стыки между главами непрерывны; механики не откатываются.";
+  "Голос канона «Лабиринт» по авторской главе 1: первое лицо, дневник инженера-студента в survival. Средняя фраза около 8 слов, заметный разброс длины, примерно четверть коротких фраз; разговорные частицы, вопросы к себе, восклицания и многоточия. Конкретика (заряд %, запах, ключи), бытовая ирония, без литературного пафоса.";
 
 export const LABYRINTH_PROTECTED_TERMS = [
   "тепловизор",
@@ -267,15 +270,16 @@ export const LABYRINTH_PROTECTED_TERMS = [
   "кольца",
 ];
 
-/** Паспорт голоса по тексту Word-гл.6 — для generate/humanize без отдельной загрузки файла. */
+/** Паспорт голоса по авторской главе 1 — для generate/humanize и локальной калибровки. */
 export const LABYRINTH_VOICE_SHEET: AuthorVoiceSheet = {
   summary:
-    "Повествование от 1 лица: студент в темноте, думает вслух, считает ресурсы, ошибается, злится. Ритм дневника — связная проза с бытовыми репликами, не инструкция и не «красивая литература».",
+    "Повествование от первого лица: студент думает вслух, считает ресурсы, ошибается, злится и шутит в стрессе. Ритм неровного личного дневника: длинное наблюдение сменяется короткой мыслью, вопросом или восклицанием.",
   voiceRules: [
-    "1 лицо; «я» умеренно (есть в тексте, но не в каждом предложении).",
+    "Первое лицо; допускай пропуск «я» в деепричастных и бытовых фразах, как в главе 1.",
     "Конкретика: проценты заряда, запахи (мята/мёд), жесты (ключ, ладонь, кольца), размеры (~2×2 м).",
-    "Внутренний монолог короткий: «Подумал…», «Не сейчас», «Ну, что же…» — без лекций читателю.",
-    "Абзацы средней длины; чередуй действие и короткую мысль.",
+    "Внутренний монолог в кавычках: вопросы к себе, «однако», «ну», «вот»; без лекций читателю.",
+    "Ориентир ритма главы 1: средняя фраза ~8 слов, разброс ~5 слов, коротких фраз ~23%.",
+    "На тысячу слов естественно встречаются примерно 8 восклицаний, 11 многоточий и 13 разговорных частиц — не вставляй их механически.",
     "Механики описывай через пробу героя (крутил — ярче/тусклее), не через энциклопедию мира.",
     "Стык с прошлой главой: не сбрасывай голод/заряд/локацию без причины.",
     "Крючки оставляй открытыми (отпечаток есть — активация позже), не закрывай всё в одной главе.",
@@ -292,21 +296,21 @@ export const LABYRINTH_VOICE_SHEET: AuthorVoiceSheet = {
   ],
   evidence: [
     {
-      quote: "Правый коридор был темнее, чем петля за спиной.",
-      observation: "Стык 5→6: продолжение тьмы, не «свет из ниоткуда».",
+      quote: "Ну, чтож. Темно, тепло и мухи не кусают.",
+      observation: "Бытовая ирония и частицы внутри напряжённой сцены.",
     },
     {
-      quote: "Мне нужно было поймать именно яркую двадцатку.",
-      observation: "Механика через цель героя, не через мануал.",
+      quote: "Хотел ведь зарядить перед лекциями, но забегался и забыл.",
+      observation: "Характер раскрывается через конкретную бытовую ошибку.",
     },
     {
-      quote: "Отпечаток никуда не денется — им займусь, когда буду готов.",
-      observation: "Финал-крючок: отложено, не активировано.",
+      quote: "Подкормились. Крыса дошла до конца лабиринта и получила вкусняшку.",
+      observation: "Самоирония короткой внутренней репликой после действия.",
     },
   ],
 };
 
-/** Профиль автора для IndexedDB: образец = Word гл.6 (+хвост 5). */
+/** Профиль автора для IndexedDB: образец = авторская глава 1. */
 export function buildLabyrinthAuthorProfile(now = Date.now()): AuthorProfileRecord {
   return {
     storyId: LABYRINTH_STORY_ID,
@@ -393,7 +397,8 @@ export function buildLabyrinthChapters(): Chapter[] {
     chapter(
       "lab-ch-8",
       "Глава 8. Уровень 2",
-      "Продолжение после входа: зелёные риски, развилки, сбор меток/счётчик, диск-якорь, карта и датчики, шаги/статус. Не откатывать ладонь и 20% гл.7.",
+      "СТЫК с концом 7: уже за щелью, «Уровень 2» на стене, ~20%, кольца/ладонь позади (проход мог закрыться). НЕ сон, НЕ активация ладони, НЕ кольца с нуля, НЕ 2%. Сцена: зелёные риски, развилки, первые метки ключом/телефоном, появление карты и датчиков (шаги/статус), диск-якорь или узел. Крючок на скрытую закладку/пропуск. 1 лицо, голос гл.6–7.",
+      chapter8Text.trim(),
     ),
     chapter(
       "lab-ch-9",
@@ -423,36 +428,71 @@ function ordinalOf(ch: Chapter): number | null {
   return chapterOrdinal(ch.title, ch.id);
 }
 
+/**
+ * Сохранять ли текст пользователя вместо seed.
+ * - пусто / короткий черновик / старый stub → seed (для 5–7 с готовым каноном)
+ * - substantive ручная правка (≠ seed, ≥600 знаков) → KEEP
+ */
+export function shouldKeepUserChapterContent(
+  existingContent: string | undefined,
+  canonContent: string | undefined,
+  options?: { minKeepChars?: number },
+): boolean {
+  const user = (existingContent || "").trim();
+  const seed = (canonContent || "").trim();
+  if (!user) return false;
+  if (seed && user === seed) return true; // already seed
+  const minKeep = options?.minKeepChars ?? 600;
+  if (user.length < minKeep) return false;
+  // Явно «битый» короткий канон-стаб: не держим
+  if (/^начну снова/i.test(user) && user.length < 1200) return false;
+  return true;
+}
+
 function applyCanonChapter(existing: Chapter | undefined, canon: Chapter, n: number): Chapter {
   if (!existing) {
     return { ...canon };
   }
-  // 5–6: всегда полный текст канона (стык, кольца, Word optimal)
+
+  // 5–6: title/summary из канона. Content: substantive user KEEP; empty/stub → seed.
   if (n === 5 || n === 6) {
+    const keep = shouldKeepUserChapterContent(existing.content, canon.content);
     return {
       ...existing,
       id: existing.id || canon.id,
       title: canon.title,
       summary: canon.summary,
-      content: canon.content,
+      content: keep ? (existing.content || "") : (canon.content || existing.content || ""),
     };
   }
-  // 7: title+summary канона; пустой content — из seed; непустой пользовательский не затираем
-  if (n === 7) {
+  // 7–8: title/summary канона; пустой content → seed; legacy seed openings → refresh;
+  // любая иная непустая правка KEEP (в т.ч. короткий черновик).
+  if (n === 7 || n === 8) {
+    const user = (existing.content || "").trim();
+    const seed = (canon.content || "").trim();
+    const looksLikeLegacySeed =
+      /^Я сидел у тупиковой стены/u.test(user) ||
+      /^За спиной стена уже сомкнулась/u.test(user) ||
+      /^За спиной стена сомкнулась/u.test(user);
+    let content = user;
+    if (!user) content = seed;
+    else if (user === seed) content = seed;
+    else if (looksLikeLegacySeed) content = seed; // v9→v10: обновить seed в приложении
     return {
       ...existing,
       id: existing.id || canon.id,
       title: canon.title,
       summary: canon.summary,
-      content: (existing.content || "").trim() || canon.content || "",
+      content: content || seed || "",
     };
   }
-  // 1–4, 8–9: title/summary канона, если пусто; content не трогаем
+
+  // 1–4, 9+: title/summary канона если пусто; content не трогаем
   return {
     ...existing,
     id: existing.id || canon.id,
     title: existing.title?.trim() ? existing.title : canon.title,
-    summary: existing.summary?.trim() ? existing.summary : canon.summary,
+    summary: existing.summary?.trim() ? existing.summary : (canon.summary || existing.summary || ""),
     content: existing.content || "",
   };
 }

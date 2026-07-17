@@ -67,7 +67,9 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
 
   // Humanized Generation States
   const [humanize, setHumanize] = useState(true);
-  const [humanizeDepth, setHumanizeDepth] = useState<HumanizeDepth>("balanced");
+  // Авторский режим по умолчанию: самый глубокий пайплайн. Для пустой книги
+  // интерфейс всё равно попросит образец голоса перед запуском.
+  const [humanizeDepth, setHumanizeDepth] = useState<HumanizeDepth>("maximum");
   const [voicePreset, setVoicePreset] = useState("neutral");
   const [authorProfile, setAuthorProfile] = useState<AuthorProfileRecord | null>(null);
   const [humanizeReport, setHumanizeReport] = useState<HumanizeReport | null>(null);

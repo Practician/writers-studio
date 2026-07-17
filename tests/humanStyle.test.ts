@@ -18,10 +18,12 @@ import {
   resolveHumanizeDepth,
   rhythmIssues,
   sentenceBurstiness,
+  shortSentenceStats,
   voicePresetById,
   HUMANIZE_DEPTHS,
   VOICE_PRESETS,
   YANDEX_DETECTOR_STYLE,
+  YANDEX_LOCAL_GAP,
   interfaceTellShare,
 } from "../server/humanStyle";
 import { priorityStyleBlockIndexes } from "../server/authorPipeline";
@@ -64,6 +66,41 @@ test("interface UI-log patterns are flagged (ch7 vs ch6 lesson)", () => {
   const body =
     "Я крутил кольцо медленно и смотрел. Число стало ярче. Заряд около двадцати процентов. Мята ещё чувствовалась.";
   assert.ok(aiTellScore(uiLog).score > aiTellScore(body).score);
+});
+
+test("Yandex structural patterns: staccato, space inventory, status UI", () => {
+  const staccato =
+    "Сел. Встал. Пошёл. Пол твёрже. Стены гладкие. Риски шли ровно. На линии загорелась точка. статус: ок. шаги: 41.";
+  const hits = detectAiTells(staccato);
+  const ids = new Set(hits.map((h) => h.id));
+  assert.ok(ids.has("one-word-sentence") || ids.has("space-inventory") || ids.has("status-colon-ui"), "structural/UI");
+  assert.ok(ids.has("steps-colon-ui") || ids.has("status-colon-ui") || ids.has("on-line-map"), "map/status UI");
+  const stats = shortSentenceStats(staccato, 4);
+  assert.ok(stats.share >= 0.3 || stats.maxChain >= 3, "staccato stats");
+  const diary =
+    "Я подумал и решил не торопиться. Однако телефон показывал около двадцати процентов, и мята ещё чувствовалась во рту.";
+  assert.ok(aiTellScore(staccato).score > aiTellScore(diary).score, "staccato should score higher than diary");
+});
+
+test("YANDEX_LOCAL_GAP documents why local detector is not 100% Yandex", () => {
+  assert.ok(YANDEX_LOCAL_GAP.reasonsNot100.length >= 3);
+  assert.ok(YANDEX_LOCAL_GAP.stats.looAccuracyApprox < 1);
+  assert.ok(humanStyleDirectives().includes("стаккато") || humanStyleDirectives().includes("СТАККАТО"));
+});
+
+test("local detector catches generic abstraction clusters learned from Yandex AI samples", () => {
+  const generic = [
+    "Время казалось замершим. Воздух был густым от тревоги.",
+    "В этом мире такие вещи казались невозможными. Но здесь всё было по-другому.",
+    "Внутри меня оставалось странное чувство. В своих мыслях я осознал: это должно было значить что-то конкретное.",
+  ].join(" ");
+  const hits = detectAiTells(generic).map((hit) => hit.id);
+  assert.ok(hits.includes("vremya-zamerlo"));
+  assert.ok(hits.includes("vozdukh-sgustilsya"));
+  assert.ok(hits.includes("impossible-here-contrast"));
+  assert.ok(hits.includes("strannoe-chuvstvo"));
+  assert.ok(hits.includes("meta-realization"));
+  assert.ok(hits.includes("forced-meaning"));
 });
 
 test("a single numbered chapter heading is not mistaken for a UI log", () => {
