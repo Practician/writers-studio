@@ -35,6 +35,7 @@ export interface LlmGenerateParams {
   responseMimeType?: string;
   responseSchema?: unknown;
   maxOutputTokens?: number;
+  abortSignal?: AbortSignal;
 }
 
 export interface LlmGenerateResult {
@@ -185,6 +186,20 @@ function splitList(raw: string): string[] {
     .split(/[,;\n]+/u)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+async function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new Error("Aborted by user");
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    if (signal) {
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(new Error("Aborted by user"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
 }
 
 function uniquePreserve(items: string[]): string[] {
@@ -346,7 +361,7 @@ export function markNvidiaModelCooldown(model: string, reason: string, ms?: numb
 }
 
 export function markNvidiaModelDead(model: string, reason: string): void {
-  nvidiaModelDead.add(model);
+  nvidiaModelDead.set(model, reason);
   nvidiaModelCooldownUntil.delete(model);
   console.warn(`NVIDIA dead «${model}» — skip until restart (${reason})`);
 }
@@ -825,6 +840,7 @@ async function generateViaNvidia(params: LlmGenerateParams): Promise<LlmGenerate
     for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
       const jsonModes = wantsJson ? [true, false] : [false];
       for (const withJson of jsonModes) {
+        if (params.abortSignal?.aborted) throw new Error("Aborted by user");
         attempts += 1;
         try {
           const result = await callNvidiaOnce(model, keys[keyIndex], params, withJson);
@@ -1037,7 +1053,7 @@ async function generateViaOpenAiChain(
   for (let round = 0; round < rounds; round += 1) {
     if (round > 0) {
       console.warn(`${provider}: TPM/лимиты — пауза 55с перед повтором цепочки…`);
-      await new Promise((r) => setTimeout(r, 55_000));
+      await delay(55_000, params.abortSignal);
     }
 
     for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
@@ -1047,6 +1063,7 @@ async function generateViaOpenAiChain(
       for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
         const jsonModes = wantsJson ? [true, false] : [false];
         for (const withJson of jsonModes) {
+          if (params.abortSignal?.aborted) throw new Error("Aborted by user");
           attempts += 1;
           try {
             const result = await callOpenAiCompatOnce(
@@ -1063,7 +1080,7 @@ async function generateViaOpenAiChain(
             }
             // free Groq: маленькая пауза, чтобы не упираться в TPM на следующем куске
             if (provider === "groq") {
-              await new Promise((r) => setTimeout(r, 1200));
+              await delay(1200, params.abortSignal);
             }
             return { ...result, failoverCount: Math.max(0, modelIndex + keyIndex + round) };
           } catch (error: any) {
@@ -1166,70 +1183,81 @@ async function callGeminiOnce(
 }
 
 async function generateViaGemini(params: LlmGenerateParams): Promise<LlmGenerateResult> {
-  if (!collectGeminiKeys().length) throw new Error("GEMINI_API_KEY is not configured.");
+  const keys = collectGeminiKeys();
+  if (!keys.length) throw new Error("GEMINI_API_KEY is not configured.");
 
   const models = geminiModelChain(params.model);
   let lastError: any = null;
-  let ai = getGeminiClient();
+  let attempts = 0;
 
   for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
     const model = models[modelIndex];
-    const maxRetries = 2;
-    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-      try {
-        const result = await callGeminiOnce(ai, model, params);
-        if (modelIndex > 0) {
-          console.warn(`Gemini: успех на «${model}» после failover.`);
-        }
-        return { ...result, failoverCount: modelIndex };
-      } catch (error: any) {
-        lastError = error;
-        const status = error?.status ?? error?.statusCode;
-
-        if (status === 429 && isDailyQuotaExhausted(error)) {
-          const rotated = rotateGeminiKey();
-          if (rotated) {
-            ai = rotated;
-            continue;
+    for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
+      const ai = new GoogleGenAI({
+        apiKey: keys[keyIndex],
+        httpOptions: { headers: { "User-Agent": "writers-studio" } },
+      });
+      const maxRetries = 1;
+      for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+        if (params.abortSignal?.aborted) throw new Error("Aborted by user");
+        attempts += 1;
+        try {
+          const result = await callGeminiOnce(ai, model, params);
+          if (modelIndex > 0 || keyIndex > 0) {
+            console.warn(`Gemini: успех на «${model}» (попытка #${attempts}, failover).`);
           }
-          // дневная квота на всех ключах для этой модели → следующая модель
-          console.warn(`Gemini «${model}»: дневная квота, следующая модель…`);
-          break;
-        }
+          return { ...result, failoverCount: modelIndex + keyIndex };
+        } catch (error: any) {
+          lastError = error;
+          const status = error?.status ?? error?.statusCode;
+          const message = String(error?.message ?? "");
 
-        const message = String(error?.message ?? "");
-        const causeCode = error?.cause?.code ?? error?.code;
-        const isNetworkError = status == null && (
-          causeCode === "ECONNRESET" || causeCode === "ETIMEDOUT" || causeCode === "ECONNREFUSED"
-          || message.includes("terminated") || message.includes("fetch failed")
-        );
-        // timeout 408 → сразу следующая модель, без 2×retry (иначе 45с×3)
-        if (status === 408 || /timeout/i.test(String(error?.message || ""))) {
-          console.warn(`Gemini «${model}» timeout → следующая…`);
-          break;
-        }
+          if (status === 429 && isDailyQuotaExhausted(error)) {
+            console.warn(`Gemini key #${keyIndex + 1} quota exhausted, next key…`);
+            break; // go to next key
+          }
 
-        const isRetryable = status === 503 || status === 429 || status === 500 || isNetworkError;
-        if (isRetryable && attempt < maxRetries) {
-          const delayMs = Math.min(1000 * 2 ** attempt, 6000) + Math.random() * 400;
-          console.warn(`Gemini «${model}» attempt ${attempt + 1} failed (${status}). Retry ${Math.round(delayMs)}ms`);
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
-          continue;
-        }
+          const causeCode = error?.cause?.code ?? error?.code;
+          const isNetworkError = status == null && (
+            causeCode === "ECONNRESET" || causeCode === "ETIMEDOUT" || causeCode === "ECONNREFUSED"
+            || message.includes("terminated") || message.includes("fetch failed")
+          );
+          
+          if (status === 408 || /timeout/i.test(message)) {
+            console.warn(`Gemini «${model}» timeout → следующая модель…`);
+            break; // too slow, try next model, don't try next key for timeout
+          }
 
-        // модель недоступна → следующая в цепочке
-        if (status === 404 || status === 400 || status === 503 || status === 429 || isDailyQuotaExhausted(error)) {
-          console.warn(`Gemini «${model}» недоступна (${status ?? "err"}) → следующая…`);
-          break;
+          const isRetryable = status === 503 || status === 429 || status === 500 || isNetworkError;
+          if (isRetryable && attempt < maxRetries) {
+            const delayMs = Math.min(1000 * 2 ** attempt, 6000) + Math.random() * 400;
+            console.warn(`Gemini «${model}» attempt ${attempt + 1} failed (${status}). Retry ${Math.round(delayMs)}ms`);
+            await delay(delayMs, params.abortSignal);
+            continue; // retry same key/model
+          }
+
+          if (status === 404 || status === 400 || status === 403 || status === 401) {
+            if (status === 403 || status === 401) {
+                console.warn(`Gemini key #${keyIndex + 1} invalid (${status}), next key…`);
+                break; // next key
+            }
+            console.warn(`Gemini «${model}» unavailable (${status}) → next model…`);
+            break; // next model
+          }
+          
+          if (isRetryable) {
+              console.warn(`Gemini key #${keyIndex + 1} rate-limited, next key…`);
+              break; // go to next key
+          }
+
+          console.warn(`Gemini «${model}» unknown error:`, message.slice(0, 120));
+          break; // next key or model
         }
-        // прочие ошибки — тоже пробуем следующую модель
-        console.warn(`Gemini «${model}» ошибка → следующая:`, message.slice(0, 120));
-        break;
       }
     }
   }
 
-  throw lastError || new Error("Gemini: все модели недоступны");
+  throw lastError || new Error("Gemini: все модели и ключи недоступны");
 }
 
 /**
@@ -1276,28 +1304,34 @@ export async function llmGenerate(params: LlmGenerateParams): Promise<LlmGenerat
     });
   };
 
-  // Жёсткий выбор: только этот провайдер, НО nvidia при полной смерти
-  // мягко уходит на Groq/Gemini (иначе UI «NVIDIA» = 10 минут 503).
+  // Жёсткий выбор: сначала пробуем его, но если упал — fallback на другие доступные.
   if (pref !== "auto") {
     try {
       console.warn(`LLM → ${preferred} (pref=${pref}, model=${params.model || "default"})`);
       return await runOne(preferred);
     } catch (error: any) {
-      if (pref === "nvidia") {
-        const soft: LlmProviderId[] = ["groq", "gemini", "openrouter"];
-        for (const id of soft) {
-          if (!has[id]) continue;
-          try {
-            return await runOne(
-              id,
-              `NVIDIA недоступен → аварийный fallback ${id}: ${String(error?.message || error).slice(0, 80)}`,
-            );
-          } catch (softErr: any) {
-            console.warn(`Fallback ${id} тоже упал: ${String(softErr?.message || softErr).slice(0, 100)}`);
-          }
+      const status = error?.status ?? error?.statusCode;
+      if (status === 401 || status === 403) {
+         throw error; // If auth fails on explicitly chosen provider, don't silently fallback, let them know.
+      }
+      
+      console.warn(`[Fallback] Провайдер ${preferred} недоступен. Пробуем резервные...`);
+      const soft: LlmProviderId[] = ["gemini", "groq", "openrouter", "nvidia"].filter(x => x !== preferred) as LlmProviderId[];
+      let lastSoftError: any = error;
+      
+      for (const id of soft) {
+        if (!has[id]) continue;
+        try {
+          return await runOne(
+            id,
+            `Fallback: ${preferred} недоступен → переключаемся на ${id}`
+          );
+        } catch (softErr: any) {
+          lastSoftError = softErr;
+          console.warn(`Fallback ${id} тоже упал: ${String(softErr?.message || softErr).slice(0, 100)}`);
         }
       }
-      throw error;
+      throw lastSoftError;
     }
   }
 

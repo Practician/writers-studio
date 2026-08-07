@@ -128,3 +128,90 @@ export interface ChatMessage {
   content: string;
   timestamp: number;
 }
+
+// ─── ИИ-Агент ────────────────────────────────────────────────────────
+
+export type AgentTaskType = "write_chapter" | "rewrite_chapter" | "continue_text" | "write_scene";
+
+export type AgentState =
+  | "idle"
+  | "planning"
+  | "extracting_context"
+  | "drafting"
+  | "evaluating"
+  | "correcting"
+  | "auditing"
+  | "learning"
+  | "completed"
+  | "error";
+
+export interface AgentConfig {
+  maxDraftAttempts: number;
+  minCraftScore: number;
+  maxTouchupPasses: number;
+  targetWordCount: [number, number];
+  humanizeDepth: "fast" | "balanced" | "maximum";
+  model: string;
+}
+
+export interface AgentTaskInput {
+  title: string;
+  genre: string;
+  description: string;
+  chapterTitle: string;
+  chapterSummary: string;
+  previousChapter: string;
+  worldBible: string;
+  bookPlan: string;
+  customPrompt: string;
+  authorSample: string;
+  voiceSheet?: AuthorVoiceSheet;
+  canonDossier?: string;
+}
+
+export type AgentEventType =
+  | { type: "state_change"; from: AgentState; to: AgentState }
+  | { type: "reasoning"; thought: string }
+  | { type: "tool_call"; tool: string; args: Record<string, unknown> }
+  | { type: "tool_result"; tool: string; summary: string }
+  | { type: "draft_preview"; text: string; wordCount: number }
+  | { type: "evaluation"; craftScore: number; burstiness: number; issues: string[] }
+  | { type: "correction"; pass: number; improved: string[] }
+  | { type: "completed"; result: AgentResultSummary }
+  | { type: "error"; message: string; recoverable: boolean };
+
+export interface AgentResultSummary {
+  taskId: string;
+  state: "completed" | "error";
+  text?: string;
+  craftScore?: number;
+  wordCount?: number;
+  draftAttempts: number;
+  touchupPasses: number;
+  error?: string;
+  duration: number;
+}
+
+export interface AgentHistoryEntry {
+  id: string;
+  taskType: AgentTaskType;
+  storyId: string;
+  chapterId?: string;
+  timestamp: number;
+  state: "completed" | "error";
+  craftScore?: number;
+  wordCount?: number;
+  duration: number;
+  lessonsLearned: string[];
+}
+
+export interface CodexEntry {
+  id: string;
+  storyId: string;
+  type: 'character' | 'location' | 'lore';
+  name: string;
+  description: string;
+  tags: string[];
+  createdAt: number;
+  updatedAt: number;
+}

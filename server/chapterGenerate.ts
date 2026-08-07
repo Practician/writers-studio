@@ -22,6 +22,7 @@ import {
   repeatedNgramShare,
   resolveHumanizeDepth,
   rhythmIssues,
+  sentenceBurstiness,
   type AiTellScore,
   type HumanizeDepth,
   type HumanizeDepthConfig,
@@ -87,6 +88,25 @@ export type GenerateFn = (params: {
   responseSchema?: unknown;
   maxOutputTokens?: number;
 }) => Promise<string>;
+
+/** Model-dependent temperature: DeepSeek лучше при более низкой (自然的 ритм),
+ *  Gemini — при более высокой (ломает предсказуемость). */
+function modelTemperature(model: string, base: number, candidateIndex = 0): number {
+  const m = model.toLowerCase();
+  const candidateBoost = candidateIndex * 0.06;
+  if (m.includes("deepseek")) {
+    // DeepSeek и так хорошо ритмит — не поднимаем сильно
+    return Math.min(1.0, base + candidateBoost);
+  }
+  if (m.includes("gemini")) {
+    // Gemini нужна более высокая температура для anti-detection
+    return Math.min(1.05, base + 0.05 + candidateBoost);
+  }
+  if (m.includes("llama") || m.includes("qwen")) {
+    return Math.min(1.02, base + 0.02 + candidateBoost);
+  }
+  return Math.min(1.05, base + candidateBoost);
+}
 
 // Ротация микро-фокусов, чтобы сегменты главы не были статистически однородны.
 const SCENE_FOCUSES = [
@@ -334,6 +354,7 @@ export async function runTouchupPipeline(
     model: string;
     personaBlock: string;
     depth: HumanizeDepthConfig;
+    targetBurstiness?: number;
   },
 ): Promise<{ text: string; refinedBlocks: number; passesRun: number; unresolvedLabels: string[] }> {
   let current = text;
@@ -381,7 +402,7 @@ export async function runTouchupPipeline(
             ? "Главное: разный ритм фраз и зачинов, без новых штампов. "
             : "Исправь issues: штампы не должны сохраниться дословно; ровный ритм разбей; убери голос «полезного ассистента». ") +
           "Сохрани события, факты, имена, числа, POV и порядок действий. Не добавляй факты и не сокращай содержание вдвое.",
-        temperature: rhythmFocus ? 0.75 : 0.7,
+        temperature: modelTemperature(options.model, rhythmFocus ? 0.75 : 0.7),
         responseMimeType: "application/json",
         responseSchema: rewriteSchema(indexes.length),
         maxOutputTokens: 24576,
@@ -391,13 +412,33 @@ export async function runTouchupPipeline(
         indexes.forEach((blockIndex, position) => {
           const candidate = payload.blocks[position];
           if (typeof candidate === "string" && candidate.trim() && !blockQualityIssues(blocks[blockIndex], candidate).length) {
-            // Не принимаем вариант, который стал «грязнее» по штампам
             const beforeHits = detectAiTells(blocks[blockIndex]).length;
             const afterHits = detectAiTells(candidate).length;
-            if (afterHits <= beforeHits) result.set(blockIndex, candidate);
+            if (afterHits < beforeHits) {
+              result.set(blockIndex, candidate);
+              return;
+            }
+            // Rhythm Pass: если задана цель и мы приблизились к ней
+            if (afterHits === beforeHits && options.targetBurstiness) {
+              const beforeDiff = Math.abs(sentenceBurstiness(blocks[blockIndex]) - options.targetBurstiness);
+              const afterDiff = Math.abs(sentenceBurstiness(candidate) - options.targetBurstiness);
+              if (afterDiff < beforeDiff) {
+                result.set(blockIndex, candidate);
+                return;
+              }
+            }
+            // Или по старому правилу - если burstiness вырос (если нет target)
+            if (afterHits === beforeHits && !options.targetBurstiness) {
+              const beforeBurst = sentenceBurstiness(blocks[blockIndex]);
+              const afterBurst = sentenceBurstiness(candidate);
+              if (afterBurst > beforeBurst + 0.08) {
+                result.set(blockIndex, candidate);
+              }
+            }
           }
         });
       }
+
       return result;
     }
 
@@ -412,7 +453,7 @@ export async function runTouchupPipeline(
           `<DATA role="priority-blocks">\n${JSON.stringify(targets)}\n</DATA>\n\n` +
           `Вариант ${variant + 1} из ${nVariants}: иная конкретная переработка. ` +
           `Верни ровно ${indexes.length} текстов. Сохрани факты и POV; убери штампы; разнообразие ритма.`,
-        temperature: 0.75 + variant * 0.08,
+        temperature: modelTemperature(options.model, 0.75, variant),
         responseMimeType: "application/json",
         responseSchema: rewriteSchema(indexes.length),
         maxOutputTokens: 24576,
@@ -761,7 +802,6 @@ async function generateScenesDraft(
 ): Promise<{ draft: string; scenesGenerated: number }> {
   const scenes: string[] = [];
   let tail = input.previousChapter ? input.previousChapter.slice(-PREVIOUS_TAIL_SCENE_CHARS) : "";
-  const tempBoost = candidateIndex * 0.06;
   for (let index = 0; index < beats.length; index += 1) {
     const sceneStyle = sample.length >= 300
       ? [styleBlock, positiveVoiceFewShots(sample, 1 + ((index + candidateIndex) % 2))].filter(Boolean).join("\n\n")
@@ -785,7 +825,7 @@ async function generateScenesDraft(
           sceneStyle,
           antiRepeat + extra,
         ),
-        temperature: Math.min(1.05, depth.sceneTemperature + tempBoost + attempt * 0.05),
+        temperature: modelTemperature(input.model, depth.sceneTemperature, candidateIndex) + attempt * 0.03,
         // free Groq TPM: max_tokens входит в лимит; сервер ещё урежет для groq
         maxOutputTokens: 4096,
       });
@@ -872,7 +912,7 @@ export async function generateHumanizedChapter(
         systemInstruction,
         contents: buildSingleChapterPrompt(input, styleExtras)
           + (cand > 0 ? `\n\nАльтернативный черновик #${cand + 1}: другие формулировки, тот же сюжет и факты.` : ""),
-        temperature: Math.min(1.05, depth.proseTemperature + cand * 0.07),
+        temperature: modelTemperature(input.model, depth.proseTemperature, cand),
         maxOutputTokens: 16384,
       });
       draft = draft.replace(/^```(?:text|markdown)?\s*/i, "").replace(/```$/i, "").trim();
@@ -991,7 +1031,7 @@ export async function rewriteDetectorAiSegments(
           `<DATA role="ai-segments">\n${JSON.stringify(targets)}\n</DATA>\n\n` +
           `Верни ровно ${batch.length} переписанных сегментов в том же порядке (JSON { "blocks": [...] }). ` +
           "Не сокращай сюжет вдвое и не добавляй новых фактов.",
-        temperature: 0.72,
+        temperature: modelTemperature(options.model, 0.72),
         responseMimeType: "application/json",
         responseSchema: rewriteSchema(batch.length),
         maxOutputTokens: 24576,
@@ -1007,9 +1047,18 @@ export async function rewriteDetectorAiSegments(
           ) {
             const beforeHits = detectAiTells(segments[segmentIndex].text).length;
             const afterHits = detectAiTells(candidate).length;
-            if (afterHits <= beforeHits + 1) {
+            // Принимаем если штампов стало строго меньше
+            if (afterHits < beforeHits) {
               revised[segmentIndex] = candidate;
               rewrittenCount += 1;
+            } else if (afterHits === beforeHits) {
+              // Или если burstiness显著 вырос — ритм стал живее
+              const beforeBurst = sentenceBurstiness(segments[segmentIndex].text);
+              const afterBurst = sentenceBurstiness(candidate);
+              if (afterBurst > beforeBurst + 0.08) {
+                revised[segmentIndex] = candidate;
+                rewrittenCount += 1;
+              }
             }
           }
         });

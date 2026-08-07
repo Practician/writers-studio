@@ -27,7 +27,8 @@ import {
   Check,
   Save,
   Settings,
-  Cpu
+  Cpu,
+  Loader2
 } from "lucide-react";
 import { Story, Chapter, Character, WorldRule, TextSelection, AuthorEditTarget } from "./types";
 import { hashText } from "./lib/authorAudit";
@@ -57,6 +58,8 @@ const MuseChat = React.lazy(() => import("./components/MuseChat"));
 const CharacterManager = React.lazy(() => import("./components/CharacterManager"));
 const WorldBuilder = React.lazy(() => import("./components/WorldBuilder"));
 const AIPanel = React.lazy(() => import("./components/AIPanel"));
+const AgentPanel = React.lazy(() => import("./components/AgentPanel"));
+const CodexPanel = React.lazy(() => import("./components/CodexPanel"));
 
 export default function App() {
   const [stories, setStories] = useState<Story[]>([]);
@@ -64,7 +67,7 @@ export default function App() {
   storiesRef.current = stories;
   const [selectedStoryId, setSelectedStoryId] = useState<string>("");
   const [selectedChapterId, setSelectedChapterId] = useState<string>("");
-  const [activeTab, setActiveTab] = useState<"muse" | "characters" | "world" | "ai">(() => {
+  const [activeTab, setActiveTab] = useState<"muse" | "characters" | "world" | "ai" | "agent" | "codex">(() => {
     return (localStorage.getItem("writers_studio_global_active_tab") as any) || "muse";
   });
   const [selectedText, setSelectedText] = useState("");
@@ -358,6 +361,24 @@ export default function App() {
     }
   }, [showStoryDetailsModal, activeStory]);
 
+  // Auto-load labirint files for empty stories
+  useEffect(() => {
+    if (activeStory && !activeStory.worldBible) {
+      fetch("/api/dev/load-labirint")
+        .then(res => res.json())
+        .then(data => {
+          if (data.bible && data.plan) {
+            const updated = { ...activeStory, worldBible: data.bible, bookPlan: data.plan, updatedAt: Date.now() };
+            const newStories = stories.map(s => s.id === updated.id ? updated : s);
+            setStories(newStories);
+            localStorage.setItem("writers_studio_stories", JSON.stringify(newStories));
+            console.log("Автоматически загружены Библия мира и План из Лабиринта");
+          }
+        })
+        .catch(console.error);
+    }
+  }, [activeStory?.id]);
+
   // 2. Auto-save triggers
   const saveAllStories = (updatedStories: Story[]) => {
     setStories(updatedStories);
@@ -478,6 +499,32 @@ export default function App() {
     setSelectedText("");
     setTextSelection(null);
     return true;
+  };
+
+  const [isMicroEditing, setIsMicroEditing] = useState(false);
+  const handleMicroEdit = async (action: string) => {
+    if (!textSelection || !activeChapter || !activeStory) return;
+    setIsMicroEditing(true);
+    try {
+      const res = await fetch(`/api/editor/${action}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: textSelection.text,
+          ...llmApiFields
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.result) {
+        handleInsertText(data.result, "replace");
+      } else {
+        alert("Ошибка: " + (data.error || "Не удалось выполнить микро-редактуру"));
+      }
+    } catch (e: any) {
+      alert("Ошибка: " + e.message);
+    } finally {
+      setIsMicroEditing(false);
+    }
   };
 
   // 6. Chapter Management
@@ -896,6 +943,58 @@ export default function App() {
     } finally {
       setIsGeneratingBible(false);
     }
+  };
+
+  const handleLoadLabirint = async () => {
+    try {
+      const response = await fetch("/api/dev/load-labirint");
+      if (!response.ok) throw new Error("Failed to load");
+      const { bible, plan } = await response.json();
+      setEditWorldBible(bible);
+      setEditBookPlan(plan);
+      alert("Данные загружены! Нажмите 'Сохранить'.");
+    } catch (e) {
+      alert("Не удалось загрузить файлы Лабиринта.");
+    }
+  };
+
+  const handleApplyPlanToChapters = () => {
+    if (!activeStory) return;
+    
+    const planText = editBookPlan || activeStory.bookPlan || "";
+    if (!planText.trim()) {
+      alert("План пуст! Загрузите план сюжета, прежде чем разбивать его на главы.");
+      return;
+    }
+
+    if (!confirm("Внимание! Это удалит все текущие главы (сейчас их " + activeStory.chapters.length + ") и создаст новые согласно тексту плана. Вы уверены?")) return;
+    
+    const regex = /Глава\s+\d+[.\-:]?\s*([^\n]+)\n([\s\S]*?)(?=(?:Глава\s+\d+)|$)/gi;
+    const matches = [...planText.matchAll(regex)];
+    
+    const newChapters = matches.map((match, index) => {
+      const title = match[1].trim();
+      let summary = match[2].trim();
+      summary = summary.replace(/АКТ \d+.*?$/si, '').replace(/ГЛАВНЫЕ ПОВОРОТЫ.*?$/si, '').replace(/ФИНАЛ.*?$/si, '').trim();
+      
+      return {
+        id: crypto.randomUUID(),
+        title: `Глава ${index + 1}. ${title}`,
+        summary: summary,
+        content: ""
+      };
+    });
+
+    if (newChapters.length === 0) {
+      alert("Не найдено ни одной главы в плане. Убедитесь, что текст содержит 'Глава 1. Название' и описания.");
+      return;
+    }
+
+    const updated = { ...activeStory, chapters: newChapters, updatedAt: Date.now() };
+    const newStories = stories.map(s => s.id === updated.id ? updated : s);
+    setStories(newStories);
+    localStorage.setItem("writers_studio_stories", JSON.stringify(newStories));
+    alert(`Успешно создано ${newChapters.length} глав! Обновите страницу или закройте настройки, чтобы увидеть изменения.`);
   };
 
   // 10.5. File Import logic
@@ -1535,11 +1634,41 @@ export default function App() {
                   id="draft-editor-textarea"
                 />
 
-                {/* Selection floating helper */}
+                {/* Selection floating helper & Micro-editing Toolbar */}
                 {selectedText && (
-                  <div className="absolute bottom-12 left-4 px-3 py-1.5 bg-blue-950 border border-blue-900 text-blue-300 text-[11px] font-medium rounded-lg shadow-lg flex items-center gap-2 animate-bounce">
-                    <Sparkles className="w-3.5 h-3.5 animate-pulse" />
-                    <span>Выделено {getWordCount(selectedText)} слов(-а). Перейдите во вкладку «ИИ Помощник» для улучшения.</span>
+                  <div className="absolute top-4 right-8 px-2 py-1.5 bg-slate-900 border border-emerald-900/50 text-slate-300 text-[11px] font-medium rounded-lg shadow-2xl flex items-center gap-2 z-10 transition-all shadow-emerald-900/20">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Выделено {getWordCount(selectedText)} слов</span>
+                    <div className="h-4 w-px bg-slate-700 mx-1"></div>
+                    <button
+                      disabled={isMicroEditing}
+                      onClick={() => handleMicroEdit("rewrite")}
+                      className="px-2 py-1 rounded bg-slate-800 hover:bg-emerald-900/40 hover:text-emerald-300 disabled:opacity-50 cursor-pointer transition-colors"
+                    >
+                      Переписать
+                    </button>
+                    <button
+                      disabled={isMicroEditing}
+                      onClick={() => handleMicroEdit("show-dont-tell")}
+                      className="px-2 py-1 rounded bg-slate-800 hover:bg-emerald-900/40 hover:text-emerald-300 disabled:opacity-50 cursor-pointer transition-colors"
+                    >
+                      Показывай, а не рассказывай
+                    </button>
+                    <button
+                      disabled={isMicroEditing}
+                      onClick={() => handleMicroEdit("sensory")}
+                      className="px-2 py-1 rounded bg-slate-800 hover:bg-emerald-900/40 hover:text-emerald-300 disabled:opacity-50 cursor-pointer transition-colors"
+                    >
+                      Больше чувств
+                    </button>
+                    <button
+                      disabled={isMicroEditing}
+                      onClick={() => handleMicroEdit("expand")}
+                      className="px-2 py-1 rounded bg-slate-800 hover:bg-emerald-900/40 hover:text-emerald-300 disabled:opacity-50 cursor-pointer transition-colors"
+                    >
+                      Расширить
+                    </button>
+                    {isMicroEditing && <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400 ml-1" />}
                   </div>
                 )}
 
@@ -1643,6 +1772,26 @@ export default function App() {
               >
                 ✨ ИИ-Помощник
               </button>
+              <button
+                onClick={() => setActiveTab("agent")}
+                className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center ${
+                  activeTab === "agent"
+                    ? "bg-slate-800 text-slate-100 font-bold border border-slate-700/50"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                🤖 Агент
+              </button>
+              <button
+                onClick={() => setActiveTab("codex")}
+                className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center ${
+                  activeTab === "codex"
+                    ? "bg-slate-800 text-slate-100 font-bold border border-slate-700/50"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                📚 Кодекс
+              </button>
             </div>
 
             {/* Scrollable Tab Views */}
@@ -1690,6 +1839,20 @@ export default function App() {
                   llmApiFields={llmApiFields}
                   openAuthorRequest={openAuthorRequest}
                 />
+              )}
+              {activeTab === "agent" && (
+                <AgentPanel
+                  story={activeStory}
+                  currentDraft={activeChapter?.content || ""}
+                  activeChapter={activeChapter}
+                  selectedModel={selectedModel}
+                  llmProvider={llmProvider}
+                  llmApiFields={llmApiFields}
+                  onInsertText={handleInsertText}
+                />
+              )}
+              {activeTab === "codex" && (
+                <CodexPanel story={activeStory} />
               )}
               </React.Suspense>
             </div>
@@ -1940,15 +2103,32 @@ export default function App() {
                   rows={4}
                   className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-slate-100 outline-none focus:border-purple-500 font-sans text-[11px]"
                 />
+                <div className="flex justify-end mt-1">
+                  <button
+                    type="button"
+                    onClick={handleApplyPlanToChapters}
+                    className="px-2.5 py-1 bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 rounded text-[10px] font-semibold transition-all cursor-pointer"
+                  >
+                    Пересоздать главы по этому плану
+                  </button>
+                </div>
               </div>
 
               <div className="space-y-2">
                 <div className="flex justify-between items-center">
                   <label className="block text-slate-400 font-medium text-blue-400">Библия мира / Сеттинг / Лор</label>
-                  <button
-                    type="button"
-                    disabled={isGeneratingBible || !editTitle}
-                    onClick={handleAIGenerateBible}
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={handleLoadLabirint}
+                      className="px-2.5 py-1 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 hover:text-emerald-200 border border-emerald-500/30 rounded text-[10px] font-semibold transition-all cursor-pointer"
+                    >
+                      ↓ Загрузить Лабиринт
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isGeneratingBible || !editTitle}
+                      onClick={handleAIGenerateBible}
                     className="px-2.5 py-1 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 hover:text-blue-200 border border-blue-500/30 rounded text-[10px] font-semibold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
                   >
                     {isGeneratingBible ? (
@@ -1962,7 +2142,8 @@ export default function App() {
                         <span>{editWorldBible.trim() ? "Дополнить лор с ИИ" : "Разработать лор с ИИ"}</span>
                       </>
                     )}
-                  </button>
+                    </button>
+                  </div>
                 </div>
                 <textarea
                   name="worldBible"

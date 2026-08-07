@@ -13,9 +13,9 @@ import chapter7Text from "./labyrinth/chapter-7.content";
 import chapter8Text from "./labyrinth/chapter-8.content";
 
 export const LABYRINTH_STORY_ID = "story-labyrinth";
-/** v10: seed гл.7–8 maximum-human (голос гл.1, без стаккато/UI, Yandex-friendly). */
-export const LABYRINTH_CANON_VERSION = 10;
-export const LABYRINTH_CANON_MARKER = `CANON_V${LABYRINTH_CANON_VERSION}_CH78_MAXHUMAN`;
+/** v11: seed гл.7 maximum-human Yandex 0%; legacy check by ending not opening. */
+export const LABYRINTH_CANON_VERSION = 11;
+export const LABYRINTH_CANON_MARKER = `CANON_V${LABYRINTH_CANON_VERSION}_CH78_YANDEX0`;
 /** Маркер образца автора: при смене версии канона профиль перезапишется, если не помечен user: */
 export const LABYRINTH_AUTHOR_SAMPLE_MARKER = `labyrinth-canon-ch1-v${LABYRINTH_CANON_VERSION}`;
 
@@ -465,15 +465,20 @@ function applyCanonChapter(existing: Chapter | undefined, canon: Chapter, n: num
       content: keep ? (existing.content || "") : (canon.content || existing.content || ""),
     };
   }
-  // 7–8: title/summary канона; пустой content → seed; legacy seed openings → refresh;
+  // 7–8: title/summary канона; пустой content → seed; legacy seed endings → refresh;
   // любая иная непустая правка KEEP (в т.ч. короткий черновик).
+  // ВАЖНО: проверяем КОНЕЦ текста, а не начало — иначе затирает правки пользователя.
   if (n === 7 || n === 8) {
     const user = (existing.content || "").trim();
     const seed = (canon.content || "").trim();
-    const looksLikeLegacySeed =
-      /^Я сидел у тупиковой стены/u.test(user) ||
-      /^За спиной стена уже сомкнулась/u.test(user) ||
-      /^За спиной стена сомкнулась/u.test(user);
+    // Legacy endings: старые seed-версии, которые нужно обновить
+    const legacyEndings = [
+      "Мужики направо не ходят!",
+      "Мужики направо не ходят)))",
+      "Хоть что-то своё.",
+    ];
+    const looksLikeLegacySeed = legacyEndings.some((ending) => user.endsWith(ending))
+      && user.length < seed.length * 1.2; // не затираем, если пользователь сильно расширил
     let content = user;
     if (!user) content = seed;
     else if (user === seed) content = seed;

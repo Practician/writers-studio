@@ -245,11 +245,10 @@ export default function MuseChat({ story, currentDraft, selectedModel, llmProvid
     setLoading(true);
 
     try {
-      const response = await fetch("/api/writer/ai", {
+      const response = await fetch("/api/muse/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "muse",
           title: story.title,
           description: story.description,
           currentDraft: currentDraft,
@@ -260,20 +259,64 @@ export default function MuseChat({ story, currentDraft, selectedModel, llmProvid
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
+        const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.error || "Ошибка при получении ответа от ИИ.");
       }
 
-      const data = await response.json();
+      if (!response.body) throw new Error("No response body");
+
+      const assistantMessageId = Math.random().toString();
+      let assistantContent = "";
       
       const assistantMessage: ChatMessage = {
-        id: Math.random().toString(),
+        id: assistantMessageId,
         role: "assistant",
-        content: data.result,
+        content: assistantContent,
         timestamp: Date.now(),
       };
+      
+      const currentMessages = [...updatedMessages, assistantMessage];
+      saveMessages(currentMessages);
+      setLoading(false); // Can stop loading spinner once stream starts
 
-      saveMessages([...updatedMessages, assistantMessage]);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let done = false;
+      let buffer = "";
+
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        done = readerDone;
+        if (value) {
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          // Keep the last incomplete line in the buffer
+          buffer = lines.pop() || "";
+          
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              const dataStr = line.slice(6);
+              if (dataStr === "[DONE]") break;
+              try {
+                const data = JSON.parse(dataStr);
+                if (data.error) throw new Error(data.error);
+                if (data.text) {
+                  assistantContent += data.text;
+                  setMessages((prev) => 
+                    prev.map(m => m.id === assistantMessageId ? { ...m, content: assistantContent } : m)
+                  );
+                }
+              } catch (e) {
+                // Ignore parse errors for incomplete JSON
+              }
+            }
+          }
+        }
+      }
+      
+      // Save final message state to localStorage
+      saveMessages(currentMessages.map(m => m.id === assistantMessageId ? { ...m, content: assistantContent } : m));
+      
     } catch (err: any) {
       setError(err.message || "Не удалось отправить сообщение.");
     } finally {

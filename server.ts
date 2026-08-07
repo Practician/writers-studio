@@ -41,6 +41,7 @@ import {
   rewriteDetectorAiSegments,
   type GenerateFn,
 } from "./server/chapterGenerate";
+import microEditRouter from "./server/api/microEdit";
 import {
   getLlmStatus,
   isDailyQuotaExhausted,
@@ -59,6 +60,9 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json({ limit: "1mb" }));
+import { museChatRouter } from "./server/api/museChat.js";
+app.use("/api/muse/chat", museChatRouter);
+app.use("/api/editor", microEditRouter);
 
 // Единый LLM-слой: Gemini и/или NVIDIA (см. server/llmProvider.ts и .env.example).
 async function generateStructured<T>(
@@ -839,6 +843,179 @@ ${text || ""}
     }
 
     res.status(isOverloaded ? 503 : isQuotaExhausted ? 429 : 500).json({ error: userMessage });
+  }
+});
+
+// ─── ИИ-Агент: API эндпоинты ─────────────────────────────────────────
+
+import { AgentOrchestrator, getAgent, removeAgent } from "./server/agent/orchestrator";
+import { EpisodicMemory } from "./server/agent/memory";
+import { buildDeepStyleProfile, mergeProfiles, buildStyleInstructionBlock } from "./server/agent/styleProfiler";
+import { learnFromEdits } from "./server/agent/selfLearner";
+import type { AgentEvent } from "./server/agent/tools";
+
+const globalEpisodicMemory = new EpisodicMemory();
+
+// POST /api/agent/start — запуск задачи агента
+app.post("/api/agent/start", async (req, res) => {
+  const llmProvider = normalizeProviderPreference(req.body?.llmProvider);
+  const credentials = parseRequestCredentials(req.body?.apiKeys);
+  try {
+    const body = req.body;
+    const taskId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const taskType = body.taskType || "write_chapter";
+    const model = resolveSelectedModel(body.model, resolveProvider(llmProvider));
+    const config = {
+      maxDraftAttempts: Math.min(5, Math.max(1, Number(body.maxDraftAttempts) || 3)),
+      minCraftScore: Math.min(95, Math.max(30, Number(body.minCraftScore) || 65)),
+      maxTouchupPasses: Math.min(5, Math.max(0, Number(body.maxTouchupPasses) || 3)),
+      targetWordCount: [
+        Number(body.targetWordCountMin) || 1800,
+        Number(body.targetWordCountMax) || 2800,
+      ] as [number, number],
+      humanizeDepth: body.humanizeDepth || "balanced",
+      model,
+    };
+    const task = {
+      id: taskId,
+      type: taskType,
+      goal: body.goal || `Написать главу «${body.input?.chapterTitle || "Без названия"}»`,
+      storyId: body.storyId || "unknown",
+      chapterId: body.chapterId,
+      config,
+      input: body.input || {},
+      styleProfile: body.styleProfile,
+    };
+
+    const orchestrator = new AgentOrchestrator(globalEpisodicMemory);
+
+    // Запуск в фоне — не блокируем HTTP-ответ
+    runWithLlmRequestContext({ preference: llmProvider, credentials }, async () => {
+      try {
+        await orchestrator.execute(task);
+      } catch (error) {
+        console.error(`Agent task ${taskId} failed:`, error);
+      }
+    });
+
+    res.json({ taskId, state: "planning" });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || "Ошибка запуска агента" });
+  }
+});
+
+// GET /api/agent/stream/:taskId — SSE-стрим событий агента
+app.get("/api/agent/stream/:taskId", (req, res) => {
+  const taskId = req.params.taskId;
+  const agent = getAgent(taskId);
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+
+  if (!agent) {
+    res.write(`data: ${JSON.stringify({ type: "error", message: "Агент не найден", recoverable: false })}\n\n`);
+    res.end();
+    return;
+  }
+
+  const sendEvent = (event: AgentEvent) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+    if (event.type === "completed" || (event.type === "error" && !event.recoverable)) {
+      setTimeout(() => res.end(), 100);
+    }
+  };
+
+  agent.onEvent(sendEvent);
+
+  req.on("close", () => {
+    // Клиент отключился — SSE закрыт
+  });
+});
+
+// GET /api/agent/status/:taskId — статус агента
+app.get("/api/agent/status/:taskId", (_req, res) => {
+  const taskId = _req.params.taskId;
+  const agent = getAgent(taskId);
+  if (!agent) {
+    res.status(404).json({ error: "Агент не найден" });
+    return;
+  }
+  res.json({ taskId, state: agent.getState() });
+});
+
+// POST /api/agent/stop/:taskId — остановка агента
+app.post("/api/agent/stop/:taskId", (_req, res) => {
+  const taskId = _req.params.taskId;
+  const agent = getAgent(taskId);
+  if (!agent) {
+    res.status(404).json({ error: "Агент не найден" });
+    return;
+  }
+  agent.abort();
+  res.json({ taskId, state: "aborted" });
+});
+
+// POST /api/agent/feedback/:taskId — обратная связь автора (для самообучения)
+app.post("/api/agent/feedback/:taskId", async (req, res) => {
+  const llmProvider = normalizeProviderPreference(req.body?.llmProvider);
+  const credentials = parseRequestCredentials(req.body?.apiKeys);
+  try {
+    await runWithLlmRequestContext({ preference: llmProvider, credentials }, async () => {
+      const { agentDraft, authorFinal, styleProfile, model } = req.body;
+      if (!agentDraft || !authorFinal || !styleProfile) {
+        res.status(400).json({ error: "Требуются agentDraft, authorFinal и styleProfile" });
+        return;
+      }
+      const resolvedModel = resolveSelectedModel(model, resolveProvider(llmProvider));
+      const result = await learnFromEdits(agentDraft, authorFinal, styleProfile, resolvedModel);
+      res.json(result);
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Ошибка обучения" });
+  }
+});
+
+// POST /api/dev/load-labirint — Temporary endpoint for loading local text files
+app.get("/api/dev/load-labirint", (req, res) => {
+  try {
+    const biblePath = "C:\\\\лабиринт\\\\Лабиринт_библия_мира_и_план_2\\\\Библия_мира_Лабиринт_уровни_и_секторы.txt";
+    const planPath = "C:\\\\лабиринт\\\\Лабиринт_библия_мира_и_план_2\\\\План_книги_Лабиринт_20_глав_секторы.txt";
+    
+    const bible = fs.readFileSync(biblePath, "utf-8");
+    const plan = fs.readFileSync(planPath, "utf-8");
+    
+    res.json({ bible, plan });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/style/profile — создание глубокого стилевого профиля
+app.post("/api/style/profile", async (req, res) => {
+  const llmProvider = normalizeProviderPreference(req.body?.llmProvider);
+  const credentials = parseRequestCredentials(req.body?.apiKeys);
+  try {
+    await runWithLlmRequestContext({ preference: llmProvider, credentials }, async () => {
+      const { sample, model, existingProfile } = req.body;
+      if (!sample || typeof sample !== "string" || sample.trim().length < 300) {
+        res.status(400).json({ error: "Требуется образец текста (≥300 символов)" });
+        return;
+      }
+      const resolvedModel = resolveSelectedModel(model, resolveProvider(llmProvider));
+      if (existingProfile) {
+        const updated = await mergeProfiles(existingProfile, sample, resolvedModel);
+        res.json(updated);
+      } else {
+        const profile = await buildDeepStyleProfile(sample, resolvedModel);
+        res.json(profile);
+      }
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Ошибка создания стилевого профиля" });
   }
 });
 
