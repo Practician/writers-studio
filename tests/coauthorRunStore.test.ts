@@ -66,3 +66,50 @@ test("planning task returns informational output without a changeset", async () 
   assert.equal(completed.changeset, undefined);
   assert.equal(completed.output, "1. Конфликт\n2. Последствие");
 });
+
+
+test("author voice mode injects the passport and emits an explainable voice signal", async () => {
+  const store = new CoauthorRunStore(tempStorePath("author-voice"));
+  const sample = "Он не спешил отвечать. Пальцы легли на край стола, и пауза вышла длиннее вопроса. В коридоре щёлкнул выключатель, но никто не вошёл. ".repeat(4);
+  const run = createCoauthorRun(request({
+    input: {
+      baseText: "Он закрыл дверь и прислушался.",
+      selectedText: "закрыл дверь",
+      chapterTitle: "Глава 1",
+      authorSample: sample,
+      voiceSheet: { summary: "Сдержанный близкий взгляд", voiceRules: ["Показывай действие"], avoid: ["Не объясняй эмоции"] },
+      styleProfile: { version: 1, metrics: { averageSentenceLength: 8 }, patterns: { narrativePace: "сдержанный" } },
+    },
+    options: {
+      humanizeDepth: "balanced",
+      model: "test-model",
+      authorVoice: { enabled: true, profileRevision: "author-corpus-v1" },
+    },
+  }));
+  store.create(run);
+
+  const completed = await executeCoauthorRun(store, run, async (_system, prompt) => {
+    assert.match(prompt, /ПАСПОРТ АВТОРСКОГО ГОЛОСА/);
+    assert.match(prompt, /ГЛУБОКИЙ ПРОФИЛЬ/);
+    return "Он прикрыл дверь и задержал ладонь на ручке.";
+  });
+
+  const voice = completed.quality?.signals.find((signal) => signal.axis === "voice_match");
+  assert.ok(voice);
+  assert.notEqual(voice?.status, "unavailable");
+  assert.match(voice?.summary || "", /Сходство с подтверждённым авторским образцом/);
+});
+
+test("author voice mode rejects a missing passport instead of silently falling back", async () => {
+  const store = new CoauthorRunStore(tempStorePath("author-voice-missing"));
+  const run = createCoauthorRun(request({
+    options: {
+      humanizeDepth: "balanced",
+      model: "test-model",
+      authorVoice: { enabled: true, profileRevision: "missing" },
+    },
+  }));
+  store.create(run);
+
+  await assert.rejects(() => executeCoauthorRun(store, run, async () => "не должен вызываться"), /Авторский режим требует/);
+});

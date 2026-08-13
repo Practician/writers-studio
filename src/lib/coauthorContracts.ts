@@ -41,6 +41,8 @@ export interface CoauthorRunInput {
   bookPlan?: string;
   authorSample?: string;
   voiceSheet?: unknown;
+  /** Версионируемый глубокий профиль: метрики, паттерны и эталоны автора. */
+  styleProfile?: unknown;
   customPrompt?: string;
 }
 
@@ -53,6 +55,11 @@ export interface CoauthorRunRequest {
   options: {
     humanizeDepth: "fast" | "balanced" | "maximum";
     model: string;
+    /** В этом режиме паспорт и подтверждённый образец обязательны для запуска. */
+    authorVoice?: {
+      enabled: boolean;
+      profileRevision: string;
+    };
   };
 }
 

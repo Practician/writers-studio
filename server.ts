@@ -905,6 +905,11 @@ app.post("/api/coauthor/runs", async (req, res) => {
     const humanizeDepth = ["fast", "balanced", "maximum"].includes(body.options?.humanizeDepth)
       ? body.options.humanizeDepth
       : "balanced";
+    const authorVoiceEnabled = body.options?.authorVoice?.enabled === true;
+    const authorProfileRevision = asText(body.options?.authorVoice?.profileRevision, 128);
+    if (authorVoiceEnabled && (asText(rawInput.authorSample).trim().length < 300 || !rawInput.voiceSheet || !authorProfileRevision)) {
+      return res.status(400).json({ error: "Режим «Авторский голос» требует сохранённый паспорт, образец от 300 знаков и ревизию профиля." });
+    }
     const request: CoauthorRunRequest = {
       mode,
       intent,
@@ -927,9 +932,14 @@ app.post("/api/coauthor/runs", async (req, res) => {
         bookPlan: asText(rawInput.bookPlan),
         authorSample: asText(rawInput.authorSample),
         voiceSheet: rawInput.voiceSheet,
+        styleProfile: rawInput.styleProfile && typeof rawInput.styleProfile === "object" ? rawInput.styleProfile : undefined,
         customPrompt: asText(rawInput.customPrompt, 4_000),
       },
-      options: { humanizeDepth, model: selectedModel },
+      options: {
+        humanizeDepth,
+        model: selectedModel,
+        authorVoice: authorVoiceEnabled ? { enabled: true, profileRevision: authorProfileRevision } : undefined,
+      },
     };
     const run = createCoauthorRun(request);
     coauthorRunStore.create(run);

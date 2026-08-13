@@ -1,4 +1,6 @@
 import { aiTellScore } from "../humanStyle";
+import { selectStyleExcerpts } from "../authorPipeline";
+import { compareStyle } from "../../src/lib/authorAudit";
 import {
   createAppendChangeset,
   createSelectionChangeset,
@@ -23,6 +25,19 @@ function planFor(run: CoauthorRun): CoauthorPlanStep[] {
   ];
 }
 
+function authorVoicePromptBlock(run: CoauthorRun, target: string): string {
+  if (!run.options.authorVoice?.enabled) return "";
+  const input = run.context.input;
+  const sample = input.authorSample?.trim() || "";
+  if (sample.length < 300 || !input.voiceSheet) {
+    throw new Error("Авторский режим требует сохранённый паспорт и образец не короче 300 знаков.");
+  }
+  const excerpts = selectStyleExcerpts(sample.slice(0, 50_000), target).slice(0, 8_000);
+  const passport = JSON.stringify(input.voiceSheet).slice(0, 8_000);
+  const deepProfile = input.styleProfile ? JSON.stringify(input.styleProfile).slice(0, 8_000) : "не построен";
+  return `\n\nПАСПОРТ АВТОРСКОГО ГОЛОСА (обязательное ограничение):\n${passport}\n\nГЛУБОКИЙ ПРОФИЛЬ (метрики, паттерны и эталоны; используй как диапазоны, не как квоты):\n${deepProfile}\n\nЭТАЛОНЫ АВТОРСКОЙ МАНЕРЫ (бери только ритм, интонацию и лексику; не переноси события):\n"""\n${excerpts}\n"""\n\nСохраняй индивидуальные неровности и конкретность автора. Не добавляй искусственные ошибки, разговорные частицы или пунктуацию ради числового сходства.`;
+}
+
 function buildPrompt(run: CoauthorRun): { system: string; prompt: string; modifiesText: boolean } {
   const input = run.context.input;
   const target = input.selectedText?.trim() || input.baseText;
@@ -35,6 +50,7 @@ function buildPrompt(run: CoauthorRun): { system: string; prompt: string; modifi
     input.worldBible ? `Библия мира:\n${input.worldBible.slice(0, 8_000)}` : "",
     input.bookPlan ? `План книги:\n${input.bookPlan.slice(0, 5_000)}` : "",
   ].filter(Boolean).join("\n\n");
+  const voiceBlock = authorVoicePromptBlock(run, target);
   const system = [
     "Ты — литературный соавтор. Сохраняй факты, POV и авторский голос.",
     "Не утверждай, что определил авторство текста. Локальные стилевые сигналы — только подсказки для редакторской работы.",
@@ -44,21 +60,21 @@ function buildPrompt(run: CoauthorRun): { system: string; prompt: string; modifi
   if (run.intent === "brainstorm") {
     return {
       system,
-      prompt: `${context}\n\nЦель автора: ${run.goal}\n\nПредложи 5 конкретных сюжетных вариантов с конфликтом, ставкой и последствием. Не меняй рукопись.`,
+      prompt: `${context}${voiceBlock}\n\nЦель автора: ${run.goal}\n\nПредложи 5 конкретных сюжетных вариантов с конфликтом, ставкой и последствием. Не меняй рукопись.`,
       modifiesText: false,
     };
   }
   if (run.intent === "plan") {
     return {
       system,
-      prompt: `${context}\n\nЦель автора: ${run.goal}\n\nСоставь короткий план следующих сцен: бит, конфликт, действие героя, новое последствие. Не пиши главу и не меняй рукопись.`,
+      prompt: `${context}${voiceBlock}\n\nЦель автора: ${run.goal}\n\nСоставь короткий план следующих сцен: бит, конфликт, действие героя, новое последствие. Не пиши главу и не меняй рукопись.`,
       modifiesText: false,
     };
   }
   if (run.intent === "audit") {
     return {
       system,
-      prompt: `${context}\n\nТекст для аудита:\n"""\n${target.slice(0, 12_000)}\n"""\n\nЦель автора: ${run.goal}\n\nВерни редакторский отчёт: риски канона, повторы, места для уточнения и что лучше оставить. Не переписывай текст.`,
+      prompt: `${context}${voiceBlock}\n\nТекст для аудита:\n"""\n${target.slice(0, 12_000)}\n"""\n\nЦель автора: ${run.goal}\n\nВерни редакторский отчёт: риски канона, повторы, места для уточнения и что лучше оставить. Не переписывай текст.`,
       modifiesText: false,
     };
   }
@@ -68,7 +84,7 @@ function buildPrompt(run: CoauthorRun): { system: string; prompt: string; modifi
     : "Бережно переработай целевой фрагмент. Сохрани события, факты, имена и POV. Верни только переработанный фрагмент.";
   return {
     system,
-    prompt: `${context}\n\nЦель автора: ${run.goal}\n\nЦелевой текст:\n"""\n${target.slice(0, 12_000)}\n"""\n\n${action}`,
+    prompt: `${context}${voiceBlock}\n\nЦель автора: ${run.goal}\n\nЦелевой текст:\n"""\n${target.slice(0, 12_000)}\n"""\n\n${action}`,
     modifiesText: true,
   };
 }
@@ -105,6 +121,17 @@ export async function executeCoauthorRun(
     aiTell.hits.slice(0, 5).map((hit) => `${hit.category}: ${hit.match}`),
   );
   const input = run.context.input;
+  if (run.options.authorVoice?.enabled && input.authorSample?.trim().length) {
+    const voice = compareStyle(input.authorSample, output);
+    quality.signals.push({
+      axis: "voice_match",
+      status: voice.similarity >= 75 ? "pass" : voice.similarity >= 60 ? "watch" : "fail",
+      summary: `Сходство с подтверждённым авторским образцом: ${voice.similarity}/100`,
+      evidence: voice.weakestMetrics.map((metric) => `${metric}: ${voice.metricScores[metric]}/100`),
+    });
+  } else {
+    quality.signals.push({ axis: "voice_match", status: "unavailable", summary: "Авторский образец не подключён к этому запуску" });
+  }
   const changeset = run.intent === "continue" || !run.context.input.selectedText
     ? createAppendChangeset(input.baseText, `${input.baseText.trim() ? "\n\n" : ""}${output}`, run.goal)
     : run.context.input.selectedText && run.context.input.baseText.indexOf(run.context.input.selectedText) >= 0

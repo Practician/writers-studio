@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { loadAuthorProfile } from '../lib/authorStorage';
+import { loadOrBuildDeepStyleProfile } from '../lib/authorVoiceProfile';
 import { assessAiTellRisk, DEFAULT_MAX_AI_TELL_SCORE } from '../lib/coauthorQuality';
 import { applyChangeset } from '../lib/coauthorContracts';
 import { 
@@ -130,10 +131,13 @@ export default function AgentPanel({
       }
     }
 
-    // Загрузить паспорт автора (для стиля)
-    const profile = await loadAuthorProfile(story.id);
-
     try {
+      // Авторский режим не использует устаревший или неполный паспорт: перед стартом
+      // поднимается профиль, привязанный к точной ревизии авторского корпуса.
+      const profile = await loadAuthorProfile(story.id);
+      if (!profile) throw new Error("Сначала создайте и сохраните паспорт автора во вкладке «Автор».");
+      const styleProfile = await loadOrBuildDeepStyleProfile(profile, selectedModel, llmProvider, llmApiFields);
+
       const response = await fetch('/api/agent/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -155,11 +159,12 @@ export default function AgentPanel({
             bookPlan: story.bookPlan || '',
             customPrompt: '',
             baseText: currentDraft,
-            authorSample: profile?.sample || '',
-            voiceSheet: profile?.voiceSheet,
+            authorSample: profile.sample,
+            voiceSheet: profile.voiceSheet,
           },
 
           // Конфиг плоский как ожидает сервер
+          styleProfile,
           maxRiskScore,
           targetWordCountMin: minWords,
           targetWordCountMax: maxWords,

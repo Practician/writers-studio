@@ -6,6 +6,7 @@ import {
   splitTextStructure,
   parseJsonResponse,
 } from "./authorPipeline";
+import { compareStyle } from "../src/lib/authorAudit";
 import {
   aiTellScore,
   blockHumanizeIssues,
@@ -70,6 +71,9 @@ export interface HumanizePipelineReport {
   mode: "single" | "scenes";
   candidatesTried?: number;
   candidateScores?: number[];
+  /** Сходство кандидатов с подтверждённым образцом автора; unavailable без образца. */
+  candidateVoiceSimilarities?: number[];
+  chosenVoiceSimilarity?: number;
   chosenCandidate?: number;
   detectorSegmentsRewritten?: number;
 }
@@ -877,7 +881,7 @@ export async function generateHumanizedChapter(
 
   let mode: "single" | "scenes" = "single";
   let scenesGenerated = 0;
-  const rawCandidates: Array<{ text: string; score: AiTellScore; index: number }> = [];
+  const rawCandidates: Array<{ text: string; score: AiTellScore; voiceSimilarity?: number; index: number }> = [];
 
   if (depth.sceneGeneration) {
     const beats = await planBeats(input, generate);
@@ -896,7 +900,12 @@ export async function generateHumanizedChapter(
           cand,
         );
         scenesGenerated = sg;
-        rawCandidates.push({ text: draft, score: aiTellScore(draft), index: cand });
+        rawCandidates.push({
+          text: draft,
+          score: aiTellScore(draft),
+          voiceSimilarity: sample.length >= 300 ? compareStyle(sample, draft).similarity : undefined,
+          index: cand,
+        });
         console.warn(
           `Chapter candidate ${cand + 1}/${candidatesN}: AI-tell=${rawCandidates[cand].score.score} burst=${rawCandidates[cand].score.burstiness.toFixed(2)}`,
         );
@@ -916,12 +925,25 @@ export async function generateHumanizedChapter(
         maxOutputTokens: 16384,
       });
       draft = draft.replace(/^```(?:text|markdown)?\s*/i, "").replace(/```$/i, "").trim();
-      rawCandidates.push({ text: draft, score: aiTellScore(draft), index: cand });
+      rawCandidates.push({
+        text: draft,
+        score: aiTellScore(draft),
+        voiceSimilarity: sample.length >= 300 ? compareStyle(sample, draft).similarity : undefined,
+        index: cand,
+      });
     }
   }
 
-  const chosen = pickBestChapterCandidate(rawCandidates, depth.scoreGate, depth.minBurstiness);
-  console.warn(`Chose chapter candidate #${chosen.index + 1} (score=${chosen.score.score})`);
+  const lowRiskWinner = pickBestChapterCandidate(rawCandidates, depth.scoreGate, depth.minBurstiness);
+  // Голос автора — первичный критерий среди практически равноценных по локальному риску
+  // вариантов. Нельзя позволить высокому AI-risk выиграть только за счёт ритма.
+  const eligibleForVoice = sample.length >= 300
+    ? rawCandidates.filter((candidate) => candidate.score.score <= lowRiskWinner.score.score + 8)
+    : [];
+  const chosen = eligibleForVoice.length
+    ? eligibleForVoice.reduce((best, candidate) => (candidate.voiceSimilarity ?? 0) > (best.voiceSimilarity ?? 0) ? candidate : best)
+    : lowRiskWinner;
+  console.warn(`Chose chapter candidate #${chosen.index + 1} (risk=${chosen.score.score}, voice=${chosen.voiceSimilarity ?? "n/a"})`);
 
   const before = chosen.score;
   const touchup = await runTouchupPipeline(chosen.text, generate, {
@@ -949,6 +971,8 @@ export async function generateHumanizedChapter(
       mode,
       candidatesTried: rawCandidates.length,
       candidateScores: rawCandidates.map((c) => c.score.score),
+      candidateVoiceSimilarities: rawCandidates.map((c) => c.voiceSimilarity ?? 0),
+      chosenVoiceSimilarity: chosen.voiceSimilarity,
       chosenCandidate: chosen.index,
     },
   };
