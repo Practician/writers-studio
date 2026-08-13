@@ -9,3 +9,7 @@ test-artifacts/
 *.log
 .env*
 !.env.example
+
+# Локальный журнал задач Соавтора содержит снимки пользовательских рукописей.
+data/coauthor-runs.json
+data/coauthor-runs.json.tmp

@@ -155,6 +155,7 @@ const BUILTIN_NVIDIA_FALLBACKS = [
   "minimaxai/minimax-m3",
   "stepfun-ai/step-3.7-flash",
   "moonshotai/kimi-k2.6",
+  "qwen/qwen3-32b",
   // Tier B — быстрые, стабильно отдают русский (Mistral family)
   "mistralai/mistral-nemotron",
   "mistralai/mistral-large-2-instruct",

@@ -28,15 +28,90 @@ export interface CoauthorTarget {
   selection?: TextRange;
 }
 
+export interface CoauthorRunInput {
+  title?: string;
+  genre?: string;
+  description?: string;
+  chapterTitle?: string;
+  chapterSummary?: string;
+  baseText: string;
+  selectedText?: string;
+  previousChapter?: string;
+  worldBible?: string;
+  bookPlan?: string;
+  authorSample?: string;
+  voiceSheet?: unknown;
+  customPrompt?: string;
+}
+
 export interface CoauthorRunRequest {
   mode: CoauthorMode;
   intent: CoauthorIntent;
   target: CoauthorTarget;
   goal: string;
+  input: CoauthorRunInput;
   options: {
     humanizeDepth: "fast" | "balanced" | "maximum";
     model: string;
   };
+}
+
+export interface StoryContextSnapshot {
+  storyId: string;
+  chapterId?: string;
+  baseRevision: string;
+  capturedAt: string;
+  input: CoauthorRunInput;
+}
+
+export type CoauthorRunStatus =
+  | "queued"
+  | "planning"
+  | "running"
+  | "awaiting_approval"
+  | "completed"
+  | "cancelled"
+  | "failed";
+
+export interface CoauthorPlanStep {
+  id: string;
+  title: string;
+  detail: string;
+  status: "pending" | "running" | "completed" | "failed" | "skipped";
+}
+
+export interface CoauthorCheckpoint {
+  id: string;
+  createdAt: string;
+  title: string;
+  message: string;
+  status: CoauthorRunStatus;
+}
+
+export interface CoauthorFeedback {
+  decision: "accepted" | "rejected" | "edited";
+  note?: string;
+  createdAt: string;
+}
+
+export interface CoauthorRun {
+  id: string;
+  mode: CoauthorMode;
+  intent: CoauthorIntent;
+  goal: string;
+  options: CoauthorRunRequest["options"];
+  status: CoauthorRunStatus;
+  context: StoryContextSnapshot;
+  plan: CoauthorPlanStep[];
+  checkpoints: CoauthorCheckpoint[];
+  feedback?: CoauthorFeedback;
+  changeset?: Changeset;
+  quality?: QualityReport;
+  /** Текстовый результат без неявного применения к рукописи. */
+  output?: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type ChangesetOperation =
@@ -88,9 +163,39 @@ export interface QualityReport {
 }
 
 export type CoauthorEvent =
-  | { type: "state"; status: "queued" | "planning" | "running" | "awaiting_approval" | "completed" | "cancelled" | "failed"; message: string }
+  | { type: "state"; status: CoauthorRunStatus; message: string }
   | { type: "checkpoint"; title: string; message: string }
   | { type: "changeset_ready"; changeset: Changeset; quality: QualityReport };
+
+export function createContextSnapshot(request: CoauthorRunRequest): StoryContextSnapshot {
+  return {
+    storyId: request.target.storyId,
+    chapterId: request.target.chapterId,
+    baseRevision: request.target.baseRevision,
+    capturedAt: new Date().toISOString(),
+    input: request.input,
+  };
+}
+
+export function createCoauthorRun(
+  request: CoauthorRunRequest,
+  plan: CoauthorPlanStep[] = [],
+): CoauthorRun {
+  const now = new Date().toISOString();
+  return {
+    id: `coauthor-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    mode: request.mode,
+    intent: request.intent,
+    goal: request.goal,
+    options: request.options,
+    status: "queued",
+    context: createContextSnapshot(request),
+    plan,
+    checkpoints: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+}
 
 export function revisionOf(text: string): string {
   return hashText(text);
@@ -108,6 +213,29 @@ export function createAppendChangeset(
     createdAt: new Date().toISOString(),
     summary,
     operations: [{ kind: "append", text, reason }],
+  };
+}
+
+export function createSelectionChangeset(
+  baseText: string,
+  range: TextRange,
+  text: string,
+  summary: string,
+  reason = "Бережная переработка Соавтора",
+): Changeset {
+  const selectedText = baseText.slice(range.start, range.end);
+  return {
+    id: `changeset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    baseRevision: revisionOf(baseText),
+    createdAt: new Date().toISOString(),
+    summary,
+    operations: [{
+      kind: "replace_selection",
+      range,
+      expectedTextHash: revisionOf(selectedText),
+      text,
+      reason,
+    }],
   };
 }
 

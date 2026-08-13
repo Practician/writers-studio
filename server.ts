@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import fs from "fs";
 import type { AuthorEditAudit, AuthorVoiceSheet } from "./src/types";
 import { DEFAULT_MAX_AI_TELL_SCORE, normalizeMaxAiTellScore } from "./src/lib/coauthorQuality";
+import { createCoauthorRun, revisionOf, type CoauthorIntent, type CoauthorMode, type CoauthorRunRequest } from "./src/lib/coauthorContracts";
 import {
   DEFAULT_AUTHOR_MODEL,
   analysisSchema,
@@ -43,6 +44,8 @@ import {
   type GenerateFn,
 } from "./server/chapterGenerate";
 import microEditRouter from "./server/api/microEdit";
+import { CoauthorRunStore } from "./server/coauthor/runStore";
+import { executeCoauthorRun } from "./server/coauthor/dispatcher";
 import {
   getLlmStatus,
   isDailyQuotaExhausted,
@@ -60,6 +63,7 @@ dotenv.config();
 
 const app = express();
 const PORT = 3000;
+const coauthorRunStore = new CoauthorRunStore();
 
 app.use(express.json({ limit: "1mb" }));
 import { museChatRouter } from "./server/api/museChat.js";
@@ -869,6 +873,139 @@ ${text || ""}
   }
 });
 
+// ─── Единый Соавтор: API запусков и ревизий ────────────────────────────
+const coauthorModes: CoauthorMode[] = ["quick", "guided", "autonomous"];
+const coauthorIntents: CoauthorIntent[] = ["continue", "rewrite", "improve", "brainstorm", "plan", "audit"];
+
+function asText(value: unknown, max = 50_000): string {
+  return typeof value === "string" ? value.slice(0, max) : "";
+}
+
+app.post("/api/coauthor/runs", async (req, res) => {
+  const llmProvider = normalizeProviderPreference(req.body?.llmProvider);
+  const credentials = parseRequestCredentials(req.body?.apiKeys);
+  try {
+    const body = req.body ?? {};
+    const rawInput = body.input ?? {};
+    const mode = coauthorModes.includes(body.mode) ? body.mode as CoauthorMode : "quick";
+    const intent = coauthorIntents.includes(body.intent) ? body.intent as CoauthorIntent : "improve";
+    const baseText = asText(rawInput.baseText);
+    const claimedRevision = asText(body.target?.baseRevision, 128);
+    if (!body.target?.storyId || !baseText && intent !== "brainstorm" && intent !== "plan") {
+      return res.status(400).json({ error: "Нужны storyId и исходный текст для задачи Соавтора" });
+    }
+    const currentRevision = revisionOf(baseText);
+    if (claimedRevision && claimedRevision !== currentRevision) {
+      return res.status(409).json({ error: "Исходная ревизия уже устарела. Обновите текст перед запуском." });
+    }
+    const selectedModel = resolveSelectedModel(
+      typeof body.options?.model === "string" ? body.options.model : body.model,
+      llmProvider || undefined,
+    );
+    const humanizeDepth = ["fast", "balanced", "maximum"].includes(body.options?.humanizeDepth)
+      ? body.options.humanizeDepth
+      : "balanced";
+    const request: CoauthorRunRequest = {
+      mode,
+      intent,
+      target: {
+        storyId: String(body.target.storyId),
+        chapterId: typeof body.target.chapterId === "string" ? body.target.chapterId : undefined,
+        baseRevision: currentRevision,
+      },
+      goal: asText(body.goal, 4_000) || "Бережно помочь с текущим текстом",
+      input: {
+        title: asText(rawInput.title, 1_000),
+        genre: asText(rawInput.genre, 500),
+        description: asText(rawInput.description, 4_000),
+        chapterTitle: asText(rawInput.chapterTitle, 1_000),
+        chapterSummary: asText(rawInput.chapterSummary, 4_000),
+        baseText,
+        selectedText: asText(rawInput.selectedText),
+        previousChapter: asText(rawInput.previousChapter),
+        worldBible: asText(rawInput.worldBible),
+        bookPlan: asText(rawInput.bookPlan),
+        authorSample: asText(rawInput.authorSample),
+        voiceSheet: rawInput.voiceSheet,
+        customPrompt: asText(rawInput.customPrompt, 4_000),
+      },
+      options: { humanizeDepth, model: selectedModel },
+    };
+    const run = createCoauthorRun(request);
+    coauthorRunStore.create(run);
+    void runWithLlmRequestContext({ preference: llmProvider, credentials }, async () => {
+      try {
+        await executeCoauthorRun(coauthorRunStore, run, async (systemInstruction, prompt, model) => {
+          const response = await llmGenerate({
+            model,
+            contents: prompt,
+            systemInstruction,
+            temperature: mode === "quick" ? 0.55 : 0.45,
+            maxOutputTokens: mode === "autonomous" ? 8_000 : 4_000,
+          });
+          return llmTextOrThrow(response, "Соавтор");
+        });
+      } catch (error: any) {
+        coauthorRunStore.fail(run.id, error?.message || "Не удалось выполнить задачу Соавтора");
+      }
+    });
+    return res.status(202).json(run);
+  } catch (error: any) {
+    return res.status(400).json({ error: error?.message || "Не удалось создать задачу Соавтора" });
+  }
+});
+
+app.get("/api/coauthor/runs/:runId", (req, res) => {
+  const run = coauthorRunStore.get(req.params.runId);
+  if (!run) return res.status(404).json({ error: "Задача Соавтора не найдена" });
+  return res.json(run);
+});
+
+app.get("/api/coauthor/runs", (req, res) => {
+  const storyId = typeof req.query.storyId === "string" ? req.query.storyId : "";
+  if (!storyId) return res.status(400).json({ error: "Передайте storyId" });
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+  return res.json({ runs: coauthorRunStore.listByStory(storyId, limit) });
+});
+
+app.get("/api/coauthor/runs/:runId/stream", (req, res) => {
+  const run = coauthorRunStore.get(req.params.runId);
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  if (!run) {
+    res.write(`data: ${JSON.stringify({ type: "state", status: "failed", message: "Задача Соавтора не найдена" })}\n\n`);
+    return res.end();
+  }
+  res.write(`data: ${JSON.stringify({ type: "state", status: run.status, message: "Подключено к задаче Соавтора" })}\n\n`);
+  for (const checkpoint of run.checkpoints) {
+    res.write(`data: ${JSON.stringify({ type: "checkpoint", title: checkpoint.title, message: checkpoint.message })}\n\n`);
+  }
+  const unsubscribe = coauthorRunStore.subscribe(run.id, (event) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  });
+  req.on("close", () => unsubscribe());
+});
+
+app.post("/api/coauthor/runs/:runId/cancel", (req, res) => {
+  const run = coauthorRunStore.cancel(req.params.runId);
+  if (!run) return res.status(404).json({ error: "Задача Соавтора не найдена" });
+  return res.json(run);
+});
+
+app.post("/api/coauthor/runs/:runId/feedback", (req, res) => {
+  const decision = req.body?.decision;
+  if (!["accepted", "rejected", "edited"].includes(decision)) {
+    return res.status(400).json({ error: "decision должен быть accepted, rejected или edited" });
+  }
+  const run = coauthorRunStore.setFeedback(req.params.runId, decision, asText(req.body?.note, 2_000));
+  if (!run) return res.status(404).json({ error: "Задача Соавтора не найдена" });
+  return res.json(run);
+});
+
 // ─── ИИ-Агент: API эндпоинты ─────────────────────────────────────────
 
 import { AgentOrchestrator, getAgent, removeAgent } from "./server/agent/orchestrator";
@@ -922,18 +1059,57 @@ app.post("/api/agent/start", async (req, res) => {
       styleProfile: body.styleProfile,
     };
 
+    const coauthorIntent: CoauthorIntent = taskType === "rewrite_chapter"
+      ? "rewrite"
+      : taskType === "continue_text" || taskType === "write_scene"
+        ? "continue"
+        : "plan";
+    const agentBaseText = asText(body.input?.baseText);
+    const coauthorRun = createCoauthorRun({
+      mode: "autonomous",
+      intent: coauthorIntent,
+      goal: task.goal,
+      target: {
+        storyId: task.storyId,
+        chapterId: task.chapterId,
+        baseRevision: revisionOf(agentBaseText),
+      },
+      input: {
+        title: asText(body.input?.title),
+        genre: asText(body.input?.genre),
+        description: asText(body.input?.description),
+        chapterTitle: asText(body.input?.chapterTitle),
+        chapterSummary: asText(body.input?.chapterSummary),
+        baseText: agentBaseText,
+        previousChapter: asText(body.input?.previousChapter),
+        worldBible: asText(body.input?.worldBible),
+        bookPlan: asText(body.input?.bookPlan),
+        authorSample: asText(body.input?.authorSample),
+        voiceSheet: body.input?.voiceSheet,
+      },
+      options: { humanizeDepth: config.humanizeDepth, model },
+    });
+    coauthorRunStore.create(coauthorRun);
+    coauthorRunStore.setStatus(coauthorRun.id, "running", "Автономный агент начал работу");
     const orchestrator = new AgentOrchestrator(globalEpisodicMemory);
 
     // Запуск в фоне — не блокируем HTTP-ответ, но сохраняем Promise чтобы поймать фатальные ошибки
     void runWithLlmRequestContext({ preference: llmProvider, credentials }, async () => {
       try {
-        await orchestrator.execute(task);
-      } catch (error) {
+        const result = await orchestrator.execute(task);
+        if (result.state === "completed") {
+          coauthorRunStore.complete(coauthorRun.id, result.text || "", result.quality, result.changeset);
+        } else {
+          coauthorRunStore.fail(coauthorRun.id, result.error || "Автономный агент не завершил задачу");
+        }
+      } catch (error: any) {
+        const message = error?.message || "Автономный агент завершился с ошибкой";
+        coauthorRunStore.fail(coauthorRun.id, message);
         console.error(`Agent task ${taskId} failed:`, error);
       }
     });
 
-    res.json({ taskId, state: "planning" });
+    res.json({ taskId, coauthorRunId: coauthorRun.id, state: "planning" });
   } catch (error: any) {
     res.status(400).json({ error: error.message || "Ошибка запуска агента" });
   }

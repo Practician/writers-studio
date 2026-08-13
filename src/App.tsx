@@ -59,6 +59,7 @@ const CharacterManager = React.lazy(() => import("./components/CharacterManager"
 const WorldBuilder = React.lazy(() => import("./components/WorldBuilder"));
 const AIPanel = React.lazy(() => import("./components/AIPanel"));
 const AgentPanel = React.lazy(() => import("./components/AgentPanel"));
+const CoauthorPanel = React.lazy(() => import("./components/CoauthorPanel"));
 const CodexPanel = React.lazy(() => import("./components/CodexPanel"));
 
 export default function App() {
@@ -67,7 +68,7 @@ export default function App() {
   storiesRef.current = stories;
   const [selectedStoryId, setSelectedStoryId] = useState<string>("");
   const [selectedChapterId, setSelectedChapterId] = useState<string>("");
-  const [activeTab, setActiveTab] = useState<"muse" | "characters" | "world" | "ai" | "agent" | "codex">(() => {
+  const [activeTab, setActiveTab] = useState<"muse" | "characters" | "world" | "coauthor" | "ai" | "agent" | "codex">(() => {
     return (localStorage.getItem("writers_studio_global_active_tab") as any) || "muse";
   });
   const [selectedText, setSelectedText] = useState("");
@@ -1758,7 +1759,7 @@ export default function App() {
         {!focusMode && activeStory && (
           <aside className="w-96 bg-[#0e1424]/60 border-l border-slate-800/80 flex flex-col shrink-0" id="assistant-panel">
             {/* Tabs Controller Header */}
-            <div className="flex border-b border-slate-800/80 bg-slate-950/50 p-1 gap-1 shrink-0 text-xs font-semibold">
+            <div className="flex overflow-x-auto border-b border-slate-800/80 bg-slate-950/50 p-1 gap-1 shrink-0 text-xs font-semibold">
               <button
                 onClick={() => setActiveTab("muse")}
                 className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center ${
@@ -1788,6 +1789,16 @@ export default function App() {
                 }`}
               >
                 🌍 Лор
+              </button>
+              <button
+                onClick={() => setActiveTab("coauthor")}
+                className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center whitespace-nowrap ${
+                  activeTab === "coauthor"
+                    ? "bg-slate-800 text-slate-100 font-bold border border-violet-500/40"
+                    : "text-violet-300 hover:text-violet-100"
+                }`}
+              >
+                Соавтор
               </button>
               <button
                 onClick={() => setActiveTab("ai")}
@@ -1849,6 +1860,19 @@ export default function App() {
                   selectedModel={selectedModel}
                   llmProvider={llmProvider}
                   llmApiFields={llmApiFields}
+                />
+              )}
+              {activeTab === "coauthor" && (
+                <CoauthorPanel
+                  story={activeStory}
+                  currentDraft={activeChapter?.content || ""}
+                  selectedText={selectedText}
+                  textSelection={textSelection}
+                  activeChapter={activeChapter}
+                  selectedModel={selectedModel}
+                  llmProvider={llmProvider}
+                  llmApiFields={llmApiFields}
+                  onInsertText={handleInsertText}
                 />
               )}
               {activeTab === "ai" && (
