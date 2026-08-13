@@ -933,6 +933,63 @@ app.post("/api/coauthor/runs", async (req, res) => {
     };
     const run = createCoauthorRun(request);
     coauthorRunStore.create(run);
+
+    if (mode === "autonomous") {
+      const autonomousType = intent === "rewrite" || intent === "improve"
+        ? "rewrite_chapter"
+        : intent === "continue"
+          ? "continue_text"
+          : "write_scene";
+      const orchestrator = new AgentOrchestrator(globalEpisodicMemory);
+      const agentTask = {
+        id: `agent-${run.id}`,
+        type: autonomousType as "write_chapter" | "rewrite_chapter" | "continue_text" | "write_scene",
+        goal: run.goal,
+        storyId: run.context.storyId,
+        chapterId: run.context.chapterId,
+        config: {
+          maxDraftAttempts: 3,
+          maxRiskScore: DEFAULT_MAX_AI_TELL_SCORE,
+          maxTouchupPasses: 3,
+          targetWordCount: [800, 2_000] as [number, number],
+          humanizeDepth: run.options.humanizeDepth,
+          model: run.options.model,
+        },
+        input: {
+          title: run.context.input.title || "",
+          genre: run.context.input.genre || "",
+          description: run.context.input.description || "",
+          chapterTitle: run.context.input.chapterTitle || "",
+          chapterSummary: run.context.input.chapterSummary || "",
+          previousChapter: run.context.input.previousChapter,
+          worldBible: run.context.input.worldBible,
+          bookPlan: run.context.input.bookPlan,
+          customPrompt: run.context.input.customPrompt,
+          authorSample: run.context.input.authorSample,
+          voiceSheet: run.context.input.voiceSheet,
+          baseText: run.context.input.baseText,
+        },
+      };
+      orchestrator.onEvent((event) => {
+        if (event.type === "state_change") coauthorRunStore.addCheckpoint(run.id, "Этап агента", `${event.from} → ${event.to}`);
+        if (event.type === "evaluation") coauthorRunStore.addCheckpoint(run.id, "Оценка агента", `Риск AI-паттернов: ${event.riskScore}/${event.maxRiskScore}`);
+      });
+      coauthorRunStore.setStatus(run.id, "planning", "Автономный агент строит план задачи");
+      void runWithLlmRequestContext({ preference: llmProvider, credentials }, async () => {
+        try {
+          const result = await orchestrator.execute(agentTask);
+          if (result.state === "completed") {
+            coauthorRunStore.complete(run.id, result.text || "", result.quality, result.changeset);
+          } else {
+            coauthorRunStore.fail(run.id, result.error || "Автономный агент не завершил задачу");
+          }
+        } catch (error: any) {
+          coauthorRunStore.fail(run.id, error?.message || "Не удалось выполнить автономную задачу Соавтора");
+        }
+      });
+      return res.status(202).json(coauthorRunStore.get(run.id));
+    }
+
     void runWithLlmRequestContext({ preference: llmProvider, credentials }, async () => {
       try {
         await executeCoauthorRun(coauthorRunStore, run, async (systemInstruction, prompt, model) => {
@@ -941,7 +998,7 @@ app.post("/api/coauthor/runs", async (req, res) => {
             contents: prompt,
             systemInstruction,
             temperature: mode === "quick" ? 0.55 : 0.45,
-            maxOutputTokens: mode === "autonomous" ? 8_000 : 4_000,
+            maxOutputTokens: 4_000,
           });
           return llmTextOrThrow(response, "Соавтор");
         });
