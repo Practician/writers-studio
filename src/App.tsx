@@ -1415,7 +1415,7 @@ export default function App() {
                   <button
                     key={opt.id}
                     type="button"
-                    disabled={!ok && opt.id !== "auto"}
+                    disabled={!ok}
                     onClick={() => setLlmProvider(opt.id)}
                     className={`notranslate px-2 py-1 rounded-lg text-[10px] sm:text-[11px] font-medium transition-all cursor-pointer disabled:opacity-35 disabled:cursor-not-allowed whitespace-nowrap border ${
                       selected
@@ -1426,7 +1426,7 @@ export default function App() {
                     translate="no"
                     lang="en"
                     title={
-                      ok || opt.id === "auto"
+                      ok
                         ? `${opt.hint}${selected ? ` · модель: ${selectedModel}` : ""}`
                         : "Нет ключа — откройте API"
                     }

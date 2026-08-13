@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { loadAuthorProfile } from '../lib/authorStorage';
+import { assessAiTellRisk, DEFAULT_MAX_AI_TELL_SCORE } from '../lib/coauthorQuality';
+import { applyChangeset } from '../lib/coauthorContracts';
 import { 
   Bot, 
   Play, 
@@ -57,7 +59,7 @@ export default function AgentPanel({
   // Config state
   const [taskType, setTaskType] = useState('draft');
   const [showConfig, setShowConfig] = useState(false);
-  const [craftThreshold, setCraftThreshold] = useState(65);
+  const [maxRiskScore, setMaxRiskScore] = useState(DEFAULT_MAX_AI_TELL_SCORE);
   const [minWords, setMinWords] = useState(1500);
   const [maxWords, setMaxWords] = useState(3000);
   const [depth, setDepth] = useState<'fast' | 'balance' | 'max'>('balance');
@@ -152,12 +154,13 @@ export default function AgentPanel({
             worldBible: story.worldBible || '',
             bookPlan: story.bookPlan || '',
             customPrompt: '',
+            baseText: currentDraft,
             authorSample: profile?.sample || '',
             voiceSheet: profile?.voiceSheet,
           },
 
           // Конфиг плоский как ожидает сервер
-          minCraftScore: craftThreshold,
+          maxRiskScore,
           targetWordCountMin: minWords,
           targetWordCountMax: maxWords,
           humanizeDepth,
@@ -227,7 +230,8 @@ export default function AgentPanel({
           case 'evaluation':
             // Данные на корне события, не вложены
             setEvaluation({
-              craftScore: data.craftScore,
+              riskScore: data.riskScore ?? data.craftScore,
+              maxRiskScore: data.maxRiskScore ?? maxRiskScore,
               burstiness: data.burstiness,
               issues: data.issues || [],
             });
@@ -285,6 +289,21 @@ export default function AgentPanel({
     }
   };
 
+  const handleApplyResult = () => {
+    if (!result?.text) return;
+    if (!result.changeset) {
+      onInsertText(result.text, 'append');
+      return;
+    }
+
+    const applied = applyChangeset(currentDraft, result.changeset);
+    if (!applied.applied) {
+      setError('Глава изменилась после старта задачи. Результат не применён автоматически: сравните текст и выберите нужные фрагменты вручную.');
+      return;
+    }
+    onInsertText(applied.text, 'replace');
+  };
+
   const addLog = (type: LogEntry['type'], content: string, toolName?: string) => {
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     setLogs(prev => [...prev, {
@@ -296,21 +315,32 @@ export default function AgentPanel({
     }]);
   };
 
-  const getScoreColor = (score: number) => {
-    if (score >= 70) return 'text-emerald-400';
-    if (score >= 50) return 'text-yellow-400';
+  const getScoreColor = (score: number, threshold = maxRiskScore) => {
+    const band = assessAiTellRisk(score, threshold).band;
+    if (band === 'clear') return 'text-emerald-400';
+    if (band === 'watch') return 'text-yellow-400';
     return 'text-rose-400';
   };
 
-  const getScoreBg = (score: number) => {
-    if (score >= 70) return 'bg-emerald-500';
-    if (score >= 50) return 'bg-yellow-500';
+  const getScoreBg = (score: number, threshold = maxRiskScore) => {
+    const band = assessAiTellRisk(score, threshold).band;
+    if (band === 'clear') return 'bg-emerald-500';
+    if (band === 'watch') return 'bg-yellow-500';
     return 'bg-rose-500';
+  };
+
+  const evaluationRiskScore = evaluation?.riskScore ?? 0;
+  const evaluationRiskThreshold = evaluation?.maxRiskScore ?? maxRiskScore;
+
+  const formatDuration = (durationMs: unknown) => {
+    const milliseconds = typeof durationMs === 'number' && Number.isFinite(durationMs) ? durationMs : 0;
+    if (milliseconds < 1_000) return `${Math.max(0, Math.round(milliseconds))} мс`;
+    return `${(milliseconds / 1_000).toFixed(milliseconds < 10_000 ? 1 : 0)} с`;
   };
 
   const states = [
     { id: 'planning', label: 'План' },
-    { id: 'context', label: 'Контекст' },
+    { id: 'extracting_context', label: 'Контекст' },
     { id: 'drafting', label: 'Драфт' },
     { id: 'evaluating', label: 'Оценка' },
     { id: 'correcting', label: 'Правки' },
@@ -366,13 +396,13 @@ export default function AgentPanel({
               <div className="flex flex-col gap-4 mt-2 p-3 bg-slate-900/50 rounded-lg border border-slate-700/30">
                 <div className="flex flex-col gap-1">
                   <div className="flex justify-between text-xs text-slate-400 mb-1">
-                    <span>Порог качества: {craftThreshold}</span>
+                    <span>Максимальный риск AI-паттернов: {maxRiskScore}</span>
                   </div>
                   <input 
                     type="range" 
-                    min="30" max="95" 
-                    value={craftThreshold}
-                    onChange={(e) => setCraftThreshold(parseInt(e.target.value))}
+                    min="0" max="60"
+                    value={maxRiskScore}
+                    onChange={(e) => setMaxRiskScore(parseInt(e.target.value))}
                     className="w-full accent-violet-500"
                     disabled={isRunning}
                   />
@@ -541,11 +571,11 @@ export default function AgentPanel({
             
             <div className="flex items-center gap-4">
               <div className="flex flex-col items-center justify-center w-20 h-20 rounded-full border-4 border-slate-700 bg-slate-900 relative">
-                <span className={`text-2xl font-bold ${getScoreColor(evaluation.craftScore || 0)}`}>
-                  {evaluation.craftScore || 0}
+                <span className={`text-2xl font-bold ${getScoreColor(evaluationRiskScore, evaluationRiskThreshold)}`}>
+                  {evaluationRiskScore}
                 </span>
-                <span className="text-[10px] text-slate-400 uppercase tracking-wider">Score</span>
-                
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider">Риск</span>
+
                 {/* SVG Ring */}
                 <svg className="absolute top-[-4px] left-[-4px] w-20 h-20 -rotate-90 pointer-events-none">
                   <circle 
@@ -553,8 +583,8 @@ export default function AgentPanel({
                     fill="none" 
                     stroke="currentColor" 
                     strokeWidth="4" 
-                    className={`${getScoreColor(evaluation.craftScore || 0)} opacity-50`}
-                    strokeDasharray={`${((evaluation.craftScore || 0) / 100) * 238} 238`}
+                    className={`${getScoreColor(evaluationRiskScore, evaluationRiskThreshold)} opacity-50`}
+                    strokeDasharray={`${Math.min(evaluationRiskScore / Math.max(evaluationRiskThreshold, 1), 1) * 238} 238`}
                     strokeLinecap="round"
                   />
                 </svg>
@@ -563,13 +593,13 @@ export default function AgentPanel({
               <div className="flex-1 flex flex-col gap-3">
                 <div className="flex flex-col gap-1">
                   <div className="flex justify-between text-xs text-slate-400">
-                    <span>Craft Score</span>
-                    <span>{evaluation.craftScore || 0}/100</span>
+                    <span>Риск AI-паттернов</span>
+                    <span>{evaluationRiskScore}/{evaluationRiskThreshold}</span>
                   </div>
                   <div className="h-2 w-full bg-slate-700 rounded-full overflow-hidden">
                     <div 
-                      className={`h-full ${getScoreBg(evaluation.craftScore || 0)} transition-all duration-1000`} 
-                      style={{ width: `${evaluation.craftScore || 0}%` }}
+                      className={`h-full ${getScoreBg(evaluationRiskScore, evaluationRiskThreshold)} transition-all duration-1000`}
+                      style={{ width: `${Math.min(evaluationRiskScore / Math.max(evaluationRiskThreshold, 1), 1) * 100}%` }}
                     />
                   </div>
                 </div>
@@ -621,7 +651,7 @@ export default function AgentPanel({
               <div className="flex-1 bg-slate-900 rounded-lg p-3 border border-slate-700 flex flex-col items-center justify-center">
                 <span className="text-xl font-bold text-slate-200 flex items-center gap-1">
                   <Clock className="w-4 h-4 text-slate-400" />
-                  {result.duration || '0s'}
+                  {formatDuration(result.duration)}
                 </span>
                 <span className="text-[10px] text-slate-400 uppercase tracking-wider">Время</span>
               </div>
@@ -642,11 +672,11 @@ export default function AgentPanel({
             )}
 
             <button 
-              onClick={() => onInsertText(result.text || '', 'append')}
+              onClick={handleApplyResult}
               className="w-full flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 bg-violet-600 text-white font-medium hover:bg-violet-500 transition-all mt-2"
             >
               <Check className="w-4 h-4" />
-              Вставить в главу
+              Применить изменения
             </button>
           </div>
         )}

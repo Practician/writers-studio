@@ -4,6 +4,7 @@ import { Type } from "@google/genai";
 import dotenv from "dotenv";
 import fs from "fs";
 import type { AuthorEditAudit, AuthorVoiceSheet } from "./src/types";
+import { DEFAULT_MAX_AI_TELL_SCORE, normalizeMaxAiTellScore } from "./src/lib/coauthorQuality";
 import {
   DEFAULT_AUTHOR_MODEL,
   analysisSchema,
@@ -898,7 +899,10 @@ app.post("/api/agent/start", async (req, res) => {
     const model = resolveSelectedModel(body.model, resolveProvider(llmProvider));
     const config = {
       maxDraftAttempts: Math.min(5, Math.max(1, Number(body.maxDraftAttempts) || 3)),
-      minCraftScore: Math.min(95, Math.max(30, Number(body.minCraftScore) || 65)),
+      // `minCraftScore` был семантически перевёрнут относительно aiTellScore.
+      // Новый контракт принимает только явный максимум риска; старые клиенты получают
+      // безопасный дефолт, а не неявную инверсию значения.
+      maxRiskScore: normalizeMaxAiTellScore(body.maxRiskScore, DEFAULT_MAX_AI_TELL_SCORE),
       maxTouchupPasses: Math.min(5, Math.max(0, Number(body.maxTouchupPasses) || 3)),
       targetWordCount: [
         Number(body.targetWordCountMin) || 1800,

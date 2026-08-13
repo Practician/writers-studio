@@ -45,7 +45,7 @@ async function main() {
     storyId: "labyrinth",
     config: {
       maxDraftAttempts: 3,
-      minCraftScore: 60,
+      maxRiskScore: 18,
       maxTouchupPasses: 2,
       targetWordCount: [1200, 2000],
       humanizeDepth: "maximum",

@@ -5,6 +5,7 @@
 import type { GenerateFn, ChapterBeat } from "../chapterGenerate";
 import { buildBeatPlanPrompt, buildScenePrompt, runTouchupPipeline, beatPlanSchema, countWordsRu } from "../chapterGenerate";
 import { aiTellScore, sentenceBurstiness, humanizeGatePassed, resolveHumanizeDepth, type HumanizeDepthConfig } from "../humanStyle";
+import { assessAiTellRisk, DEFAULT_MAX_AI_TELL_SCORE } from "../../src/lib/coauthorQuality";
 import { buildAuditPrompt, auditSchema, parseJsonResponse } from "../authorPipeline";
 
 export interface ToolContext {
@@ -27,7 +28,15 @@ export type AgentEvent =
     | { type: 'tool_call', tool: string, args: Record<string, unknown> }
     | { type: 'tool_result', tool: string, summary: string }
     | { type: 'draft_preview', text: string, wordCount: number }
-    | { type: 'evaluation', craftScore: number, burstiness: number, issues: string[] }
+    | {
+        type: 'evaluation',
+        riskScore: number,
+        maxRiskScore: number,
+        /** @deprecated Use riskScore. */
+        craftScore: number,
+        burstiness: number,
+        issues: string[]
+      }
     | { type: 'correction', pass: number, improved: string[] }
     | { type: 'completed', result: unknown }
     | { type: 'error', message: string, recoverable: boolean };
@@ -120,13 +129,20 @@ const evaluateCraftTool: AgentTool = {
             const text = args.text as string;
             const scoreResult = aiTellScore(text);
             const burstiness = sentenceBurstiness(text);
-            // using default gate values
-            const passed = humanizeGatePassed(scoreResult, 60, 3.0);
+            const depth = resolveHumanizeDepth("balanced");
+            const risk = assessAiTellRisk(scoreResult.score, DEFAULT_MAX_AI_TELL_SCORE);
+            const passed = risk.passed && humanizeGatePassed(scoreResult, depth.scoreGate, depth.minBurstiness);
             
             return {
                 success: true,
-                data: { score: scoreResult.score, burstiness, hits: scoreResult.hits, passed },
-                summary: `Оценка: score=${scoreResult.score.toFixed(1)}, burstiness=${burstiness.toFixed(1)}, passed=${passed}.`
+                data: {
+                    riskScore: risk.riskScore,
+                    maxRiskScore: risk.maxRiskScore,
+                    burstiness,
+                    hits: scoreResult.hits,
+                    passed,
+                },
+                summary: `Риск AI-паттернов: ${risk.riskScore}/${risk.maxRiskScore}; burstiness=${burstiness.toFixed(2)}; passed=${passed}.`
             };
         } catch (e: any) {
             return { success: false, summary: 'Ошибка оценки текста.', error: e.message };
@@ -149,7 +165,7 @@ const rewriteWeakBlocksTool: AgentTool = {
             const improvedText = await runTouchupPipeline(
                 text,
                 context.generate,
-                { model: context.model, personaBlock: styleInstruction, depth: 'medium' as any }
+                { model: context.model, personaBlock: styleInstruction, depth: resolveHumanizeDepth("balanced") }
             );
             
             return {

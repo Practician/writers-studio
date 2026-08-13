@@ -147,7 +147,10 @@ export type AgentState =
 
 export interface AgentConfig {
   maxDraftAttempts: number;
-  minCraftScore: number;
+  /** Максимально допустимый локальный AI-tell risk; меньшее значение текста лучше. */
+  maxRiskScore: number;
+  /** @deprecated Use maxRiskScore. */
+  minCraftScore?: number;
   maxTouchupPasses: number;
   targetWordCount: [number, number];
   humanizeDepth: "fast" | "balanced" | "maximum";
@@ -175,7 +178,15 @@ export type AgentEventType =
   | { type: "tool_call"; tool: string; args: Record<string, unknown> }
   | { type: "tool_result"; tool: string; summary: string }
   | { type: "draft_preview"; text: string; wordCount: number }
-  | { type: "evaluation"; craftScore: number; burstiness: number; issues: string[] }
+  | {
+      type: "evaluation";
+      riskScore: number;
+      maxRiskScore: number;
+      /** @deprecated Use riskScore. */
+      craftScore?: number;
+      burstiness: number;
+      issues: string[];
+    }
   | { type: "correction"; pass: number; improved: string[] }
   | { type: "completed"; result: AgentResultSummary }
   | { type: "error"; message: string; recoverable: boolean };
@@ -184,6 +195,8 @@ export interface AgentResultSummary {
   taskId: string;
   state: "completed" | "error";
   text?: string;
+  riskScore?: number;
+  /** @deprecated Use riskScore. */
   craftScore?: number;
   wordCount?: number;
   draftAttempts: number;
@@ -199,6 +212,8 @@ export interface AgentHistoryEntry {
   chapterId?: string;
   timestamp: number;
   state: "completed" | "error";
+  riskScore?: number;
+  /** @deprecated Use riskScore. */
   craftScore?: number;
   wordCount?: number;
   duration: number;

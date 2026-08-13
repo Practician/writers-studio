@@ -13,6 +13,13 @@ import {
   buildPersonaAndStyle,
 } from "../chapterGenerate";
 import { aiTellScore, resolveHumanizeDepth, HumanizeDepth } from "../humanStyle";
+import { assessAiTellRisk, DEFAULT_MAX_AI_TELL_SCORE } from "../../src/lib/coauthorQuality";
+import {
+  createAppendChangeset,
+  qualityReportFromAiTell,
+  type Changeset,
+  type QualityReport,
+} from "../../src/lib/coauthorContracts";
 import { llmGenerate, llmTextOrThrow } from "../llmProvider";
 import { DeepStyleProfile, buildStyleInstructionBlock } from "./styleProfiler";
 import { SessionMemory, EpisodicMemory, EpisodeRecord, AgentPlan } from "./memory";
@@ -32,7 +39,8 @@ export type AgentState =
 
 export interface AgentConfig {
   maxDraftAttempts: number; // default 3
-  minCraftScore: number; // default 65
+  /** Максимально допустимый локальный AI-tell risk; меньшее значение текста лучше. */
+  maxRiskScore: number; // default 18
   maxTouchupPasses: number; // default 3
   targetWordCount: [number, number]; // default [1800, 2800]
   humanizeDepth: HumanizeDepth; // default 'balanced'
@@ -51,6 +59,8 @@ export interface AgentTaskInput {
   customPrompt?: string;
   authorSample?: string;
   voiceSheet?: unknown;
+  /** Текст, на который будет рассчитан безопасный changeset результата. */
+  baseText?: string;
 }
 
 export interface AgentTask {
@@ -68,6 +78,9 @@ export interface AgentResult {
   taskId: string;
   state: "completed" | "error";
   text?: string;
+  /** Явный риск локальных AI-признаков: меньшее значение означает более чистый текст. */
+  riskScore?: number;
+  /** @deprecated Используйте riskScore. Оставлено для обратной совместимости SSE-клиентов. */
   craftScore?: number;
   wordCount?: number;
   reasoningLog: Array<{ thought: string; decision: string }>;
@@ -75,6 +88,8 @@ export interface AgentResult {
   touchupPasses: number;
   duration: number;
   error?: string;
+  changeset?: Changeset;
+  quality?: QualityReport;
 }
 
 export class AgentOrchestrator {
@@ -122,10 +137,22 @@ export class AgentOrchestrator {
     const duration = Date.now() - this.startTime;
     const isError = this.state === "error" || this.state !== "completed";
 
+    const quality = this.draftText && this.task
+      ? qualityReportFromAiTell(this.draftScore, this.task.config.maxRiskScore)
+      : undefined;
+    const changeset = this.draftText && this.task
+      ? createAppendChangeset(
+          this.task.input.baseText ?? "",
+          this.draftText,
+          `Результат автономной задачи: ${this.task.goal}`,
+        )
+      : undefined;
+
     const result: AgentResult = {
       taskId: this.task.id,
       state: isError ? "error" : "completed",
       text: this.draftText || undefined,
+      riskScore: this.draftScore || undefined,
       craftScore: this.draftScore || undefined,
       wordCount: this.draftText ? countWordsRu(this.draftText) : undefined,
       reasoningLog: this.reasoningLog,
@@ -133,6 +160,8 @@ export class AgentOrchestrator {
       touchupPasses: this.touchupPassesCount,
       duration,
       error: isError ? "Task failed to complete normally" : undefined,
+      changeset,
+      quality,
     };
 
     if (this.state === "completed") {
@@ -157,11 +186,14 @@ export class AgentOrchestrator {
           taskId: this.task.id,
           state: "completed",
           text: this.draftText,
+          riskScore: this.draftScore,
           craftScore: this.draftScore,
           wordCount: countWordsRu(this.draftText),
           draftAttempts: this.draftAttemptsCount,
           touchupPasses: this.touchupPassesCount,
           duration,
+          changeset,
+          quality,
         },
       });
     }
@@ -327,16 +359,28 @@ export class AgentOrchestrator {
       this.draftScore = evaluation.score;
 
       const issues = evaluation.hits.map((h) => `${h.category}: ${h.match}`);
-      this.emit({ type: "evaluation", craftScore: this.draftScore, burstiness: evaluation.burstiness, issues });
-
       const config = this.task!.config;
-      const targetScore = config.minCraftScore ?? 65;
+      const quality = assessAiTellRisk(evaluation.score, config.maxRiskScore ?? DEFAULT_MAX_AI_TELL_SCORE);
+      this.emit({
+        type: "evaluation",
+        riskScore: quality.riskScore,
+        maxRiskScore: quality.maxRiskScore,
+        craftScore: quality.riskScore,
+        burstiness: evaluation.burstiness,
+        issues,
+      });
 
-      if (this.draftScore < targetScore) {
-        this.logReasoning(`Score ${this.draftScore} below threshold ${targetScore}`, "Moving to correction phase");
+      if (!quality.passed) {
+        this.logReasoning(
+          `Risk ${quality.riskScore} exceeds maximum ${quality.maxRiskScore}`,
+          "Moving to correction phase",
+        );
         this.transition("correcting");
       } else {
-        this.logReasoning(`Score ${this.draftScore} passes threshold ${targetScore}`, "Moving to audit phase");
+        this.logReasoning(
+          `Risk ${quality.riskScore} is within maximum ${quality.maxRiskScore}`,
+          "Moving to audit phase",
+        );
         this.transition("auditing");
       }
     } catch (e: any) {
