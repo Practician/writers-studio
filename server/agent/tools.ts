@@ -206,16 +206,53 @@ const queryLoreTool: AgentTool = {
     },
     handler: async (args, context) => {
         try {
-            const query = (args.query as string).toLowerCase();
+            const query = args.query as string;
             const worldBible = args.worldBible as string;
             
-            const lines = worldBible.split('\\n');
-            const matches = lines.filter(line => line.toLowerCase().includes(query));
+            if (!worldBible.trim()) {
+                return {
+                    success: true,
+                    data: { excerpts: "" },
+                    summary: "Лор мира пуст."
+                };
+            }
+
+            const queryLower = query.toLowerCase().trim();
+            const lines = worldBible.split('\n');
+            const matches = lines.filter(line => line.trim() && line.toLowerCase().includes(queryLower));
             
+            if (matches.length > 0) {
+                return {
+                    success: true,
+                    data: { excerpts: matches.join('\n') },
+                    summary: `Найдено ${matches.length} совпадений по лору.`
+                };
+            }
+
+            // Умный поиск через LLM, если точных совпадений подстроки нет (например, передан длинный синопсис)
+            const systemInstruction = "You are a research assistant. Extract only the facts and details from the World Lore that are directly relevant to the query/summary. Do not invent anything.";
+            const contents = `Запрос/Описание: "${query}"\n\nЛор мира:\n${worldBible}\n\nВыпиши из Лора мира все абзацы, факты или правила, которые относятся к запросу. Не выдумывай ничего от себя. Если ничего релевантного нет, ответь "Нет совпадений".`;
+            
+            const response = await context.generate({
+                contents,
+                model: context.model,
+                systemInstruction,
+                temperature: 0.1
+            });
+
+            const text = response.trim();
+            if (text === "" || /нет совпадений|no matches/i.test(text)) {
+                return {
+                    success: true,
+                    data: { excerpts: "" },
+                    summary: "Найдено 0 совпадений по лору."
+                };
+            }
+
             return {
                 success: true,
-                data: { excerpts: matches.join('\\n') },
-                summary: `Найдено ${matches.length} совпадений по лору.`
+                data: { excerpts: text },
+                summary: "Найдена релевантная информация в лоре."
             };
         } catch (e: any) {
             return { success: false, summary: 'Ошибка поиска в лоре.', error: e.message };

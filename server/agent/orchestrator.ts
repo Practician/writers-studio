@@ -261,12 +261,28 @@ export class AgentOrchestrator {
     try {
       if (this.task!.input.previousChapter) {
         const extCont = await executeTool("extractContinuity", { text: this.task!.input.previousChapter }, ctx);
-        this.extractedContext.continuity = extCont.summary;
+        if (extCont.success && extCont.data) {
+          const d = extCont.data as any;
+          const facts = Array.isArray(d.facts) ? d.facts.join("; ") : "";
+          const numbers = Array.isArray(d.numbers) ? d.numbers.join("; ") : "";
+          const states = Array.isArray(d.states) ? d.states.join("; ") : "";
+          this.extractedContext.continuity = [
+            facts ? `Ключевые факты: ${facts}` : "",
+            numbers ? `Числа/даты: ${numbers}` : "",
+            states ? `Состояния персонажей: ${states}` : ""
+          ].filter(Boolean).join("\n");
+        } else {
+          this.extractedContext.continuity = extCont.summary;
+        }
       }
 
       if (this.task!.input.worldBible) {
         const extLore = await executeTool("queryLore", { query: this.task!.input.chapterSummary, worldBible: this.task!.input.worldBible }, ctx);
-        this.extractedContext.lore = extLore.summary;
+        if (extLore.success && extLore.data && (extLore.data as any).excerpts) {
+          this.extractedContext.lore = (extLore.data as any).excerpts;
+        } else {
+          this.extractedContext.lore = extLore.summary;
+        }
       }
 
       this.transition("drafting");

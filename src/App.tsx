@@ -154,6 +154,37 @@ export default function App() {
   const [publishedChapterDetails, setPublishedChapterDetails] = useState<{ title: string; wordCount: number } | null>(null);
   const [showSaveSuccess, setShowSaveSuccess] = useState(false);
 
+  // LLM Activity Log — SSE-лента событий ротации ключей/провайдеров
+  const [llmLogs, setLlmLogs] = useState<Array<{ level: string; provider?: string; message: string; ts: number }>>([]);
+  const [showLlmLog, setShowLlmLog] = useState(false);
+  const [llmLogCollapsed, setLlmLogCollapsed] = useState(false);
+  const llmLogEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const es = new EventSource("/api/llm/log-stream");
+    es.onmessage = (e) => {
+      try {
+        const event = JSON.parse(e.data);
+        setLlmLogs((prev) => {
+          const next = [...prev, event].slice(-40);
+          return next;
+        });
+        setShowLlmLog(true);
+        // Авто-скрыть через 8с после последнего события
+        clearTimeout((window as any).__llmLogHideTimer);
+        (window as any).__llmLogHideTimer = setTimeout(() => setShowLlmLog(false), 8_000);
+      } catch {}
+    };
+    return () => es.close();
+  }, []);
+
+  useEffect(() => {
+    if (showLlmLog && !llmLogCollapsed) {
+      llmLogEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [llmLogs, showLlmLog, llmLogCollapsed]);
+
+
   // Metadata Edit States (Modal)
   const [editTitle, setEditTitle] = useState("");
   const [editGenre, setEditGenre] = useState("");
@@ -1375,11 +1406,7 @@ export default function App() {
               <Cpu className="w-3.5 h-3.5 text-slate-500 ml-0.5 shrink-0" />
               {(
                 [
-                  { id: "groq" as const, label: "Groq", active: "bg-orange-600/35 text-orange-100 border-orange-600/50", hint: "Быстрый Groq — основной по умолчанию" },
                   { id: "gemini" as const, label: "Gemini", active: "bg-blue-600/35 text-blue-200 border-blue-600/50", hint: "Google Gemini" },
-                  { id: "openrouter" as const, label: "OpenRouter", active: "bg-pink-600/35 text-pink-100 border-pink-600/50", hint: "OpenRouter free-модели" },
-                  { id: "nvidia" as const, label: "NVIDIA", active: "bg-emerald-600/35 text-emerald-200 border-emerald-600/50", hint: "NVIDIA NIM — сильнее, но часто медленнее" },
-                  { id: "auto" as const, label: "Автовыбор", active: "bg-violet-600/35 text-violet-100 border-violet-600/50", hint: "Groq → Gemini → OpenRouter → NVIDIA при сбоях" },
                 ] as const
               ).map((opt) => {
                 const ok = providerHasKey(opt.id);
@@ -1893,15 +1920,6 @@ export default function App() {
               {(
                 [
                   {
-                    key: "groq" as const,
-                    label: "Groq (рекомендуется)",
-                    hint: "console.groq.com — быстрый free-tier, первый в Автовыборе",
-                    env: "GROQ_API_KEY",
-                    envOk: llmStatus?.keysFromEnv?.groq,
-                    accent: "border-orange-500/25 bg-orange-950/15",
-                    badge: "text-orange-200 bg-orange-950/50 border-orange-800/40",
-                  },
-                  {
                     key: "gemini" as const,
                     label: "Google Gemini",
                     hint: "aistudio.google.com/apikey",
@@ -1909,24 +1927,6 @@ export default function App() {
                     envOk: llmStatus?.keysFromEnv?.gemini,
                     accent: "border-blue-500/25 bg-blue-950/20",
                     badge: "text-blue-300 bg-blue-950/50 border-blue-800/40",
-                  },
-                  {
-                    key: "openrouter" as const,
-                    label: "OpenRouter",
-                    hint: "openrouter.ai/keys — :free модели",
-                    env: "OPENROUTER_API_KEY",
-                    envOk: llmStatus?.keysFromEnv?.openrouter,
-                    accent: "border-pink-500/25 bg-pink-950/15",
-                    badge: "text-pink-200 bg-pink-950/50 border-pink-800/40",
-                  },
-                  {
-                    key: "nvidia" as const,
-                    label: "NVIDIA NIM",
-                    hint: "build.nvidia.com — сильнее, но часто медленнее",
-                    env: "NVIDIA_API_KEY",
-                    envOk: llmStatus?.keysFromEnv?.nvidia,
-                    accent: "border-emerald-500/25 bg-emerald-950/15",
-                    badge: "text-emerald-300 bg-emerald-950/50 border-emerald-800/40",
                   },
                 ]
               ).map((row) => {
@@ -1965,8 +1965,7 @@ export default function App() {
               })}
 
               <div className="rounded-xl border border-slate-800 bg-slate-950/50 px-3.5 py-3 text-[10px] text-slate-500 leading-relaxed">
-                Режим <strong className="text-slate-300">Автовыбор</strong> в шапке сам перебирает сервисы при сбоях:
-                Gemini → NVIDIA → Groq → OpenRouter. Ключи не попадают в git.
+                Ключи хранятся только локально в кэше браузера и не попадают в систему контроля версий git.
               </div>
             </div>
 
@@ -2768,6 +2767,77 @@ export default function App() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+      {/* LLM Activity Log — всплывающая панель событий фейловера/ротации */}
+      {showLlmLog && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: "16px",
+            right: "16px",
+            zIndex: 9999,
+            width: "360px",
+            maxWidth: "calc(100vw - 32px)",
+            background: "rgba(10, 14, 28, 0.96)",
+            border: "1px solid rgba(99, 102, 241, 0.3)",
+            borderRadius: "12px",
+            boxShadow: "0 8px 32px rgba(0,0,0,0.6), 0 0 0 1px rgba(99,102,241,0.1)",
+            backdropFilter: "blur(12px)",
+            overflow: "hidden",
+          }}
+        >
+          {/* Header */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "8px 12px",
+              borderBottom: "1px solid rgba(99,102,241,0.15)",
+              cursor: "pointer",
+              background: "rgba(99,102,241,0.08)",
+            }}
+            onClick={() => setLlmLogCollapsed((v) => !v)}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <span style={{ display: "inline-block", width: "7px", height: "7px", borderRadius: "50%", background: "#818cf8", boxShadow: "0 0 6px #818cf8", animation: "pulse 1.5s ease-in-out infinite" }} />
+              <span style={{ fontSize: "11px", fontWeight: 600, color: "#a5b4fc", letterSpacing: "0.05em", textTransform: "uppercase" }}>LLM Activity</span>
+            </div>
+            <div style={{ display: "flex", gap: "4px" }}>
+              <button
+                onClick={(e) => { e.stopPropagation(); setLlmLogCollapsed((v) => !v); }}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b", padding: "2px 4px", borderRadius: "4px", fontSize: "12px" }}
+                title={llmLogCollapsed ? "Развернуть" : "Свернуть"}
+              >{llmLogCollapsed ? "▲" : "▼"}</button>
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowLlmLog(false); }}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b", padding: "2px 4px", borderRadius: "4px", fontSize: "12px" }}
+                title="Закрыть"
+              >✕</button>
+            </div>
+          </div>
+          {/* Log entries */}
+          {!llmLogCollapsed && (
+            <div style={{ maxHeight: "220px", overflowY: "auto", padding: "8px 4px" }}>
+              {llmLogs.map((entry, i) => {
+                const color = entry.level === "error" ? "#f87171" : entry.level === "warn" ? "#fbbf24" : entry.level === "success" ? "#34d399" : "#94a3b8";
+                const providerColors: Record<string, string> = { gemini: "#60a5fa", nvidia: "#4ade80", groq: "#fb923c", openrouter: "#e879f9" };
+                const provColor = entry.provider ? (providerColors[entry.provider] || "#94a3b8") : "transparent";
+                const time = new Date(entry.ts).toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+                return (
+                  <div key={i} style={{ display: "flex", gap: "6px", alignItems: "baseline", padding: "3px 8px", borderRadius: "6px", background: i % 2 === 0 ? "rgba(255,255,255,0.02)" : "transparent" }}>
+                    <span style={{ fontSize: "9px", color: "#475569", flexShrink: 0, fontFamily: "monospace", lineHeight: "1.8" }}>{time}</span>
+                    {entry.provider && (
+                      <span style={{ fontSize: "9px", fontWeight: 700, color: provColor, flexShrink: 0, textTransform: "uppercase", lineHeight: "1.8", letterSpacing: "0.04em" }}>{entry.provider}</span>
+                    )}
+                    <span style={{ fontSize: "11px", color, lineHeight: "1.5", wordBreak: "break-word" }}>{entry.message}</span>
+                  </div>
+                );
+              })}
+              <div ref={llmLogEndRef} />
+            </div>
+          )}
         </div>
       )}
     </div>

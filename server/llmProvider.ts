@@ -11,6 +11,7 @@
 // auto: Groq → Gemini → OpenRouter → NVIDIA (скорость сначала; NVIDIA часто долгий/таймауты).
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { EventEmitter } from "node:events";
 import { GoogleGenAI } from "@google/genai";
 
 export type ProviderPreference = "gemini" | "nvidia" | "groq" | "openrouter" | "auto";
@@ -26,6 +27,25 @@ export interface RequestLlmCredentials {
 
 const providerOverrideAls = new AsyncLocalStorage<ProviderPreference>();
 const credentialsAls = new AsyncLocalStorage<RequestLlmCredentials>();
+
+// ─── LLM Log Bus (SSE-трансляция логов в UI) ──────────────────────────────
+export type LlmLogLevel = "info" | "warn" | "error" | "success";
+export interface LlmLogEvent {
+  level: LlmLogLevel;
+  provider?: string;
+  message: string;
+  ts: number;
+}
+/** Глобальный EventEmitter. server.ts подписывается и транслирует в SSE. */
+export const llmLogBus = new EventEmitter();
+llmLogBus.setMaxListeners(50);
+
+export function llmLog(level: LlmLogLevel, message: string, provider?: string): void {
+  console.warn(`[LLM] ${message}`);
+  const event: LlmLogEvent = { level, provider, message, ts: Date.now() };
+  llmLogBus.emit("log", event);
+}
+
 
 export interface LlmGenerateParams {
   model?: string;
@@ -76,10 +96,10 @@ const DEFAULT_NVIDIA_BASE = "https://integrate.api.nvidia.com/v1";
 const DEFAULT_GROQ_BASE = "https://api.groq.com/openai/v1";
 const DEFAULT_OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 // DeepSeek v4 flash — лучшая RU-проза по локальному бенчмарку NVIDIA.
-const DEFAULT_NVIDIA_MODEL = "deepseek-ai/deepseek-v4-flash";
+const DEFAULT_NVIDIA_MODEL = "deepseek-ai/deepseek-v4-flash-0731";
 // Live humanize benchmark 2026-07: 3.5-flash дал лучшее совпадение локальной
 // оценки с внешней; 2.0 и 2.5 в этом аккаунте падали в quota/404.
-const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
+const DEFAULT_GEMINI_MODEL = "gemini-flash-lite-latest";
 const DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile";
 // openrouter/auto часто платный (402 без credits); free-router — openrouter/free
 const DEFAULT_OPENROUTER_MODEL = "openrouter/free";
@@ -100,32 +120,27 @@ const GROQ_MAX_USER_CHARS = 5500;
 
 const BUILTIN_GROQ_FALLBACKS = [
   "llama-3.3-70b-versatile",
-  "meta-llama/llama-4-scout-17b-16e-instruct",
-  "qwen/qwen3-32b",
-  "openai/gpt-oss-120b",
-  "openai/gpt-oss-20b",
   "llama-3.1-8b-instant",
+  "deepseek-r1-distill-llama-70b",
+  "qwen-2.5-72b",
+  "qwen-2.5-coder-32b",
+  "mixtral-8x7b-32768",
+  "gemma2-9b-it",
 ];
 
 /**
- * Актуальные free-модели OpenRouter (live probe 2026-07).
+ * Актуальные free-модели OpenRouter (live probe).
  * :free список меняется — 404/402 → dead/cooldown, следующая.
  */
 const BUILTIN_OPENROUTER_FALLBACKS = [
   "openrouter/free",
-  "google/gemma-4-26b-a4b-it:free",
-  "google/gemma-4-31b-it:free",
-  "qwen/qwen3-next-80b-a3b-instruct:free",
-  "qwen/qwen3-coder:free",
-  "openai/gpt-oss-20b:free",
-  "nvidia/nemotron-3-nano-30b-a3b:free",
-  "nvidia/nemotron-3-super-120b-a12b:free",
-  "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "google/gemma-2-9b-it:free",
+  "qwen/qwen-2.5-72b-instruct:free",
   "meta-llama/llama-3.3-70b-instruct:free",
-  "meta-llama/llama-3.2-3b-instruct:free",
-  "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
-  "nousresearch/hermes-3-llama-3.1-405b:free",
-  "tencent/hy3:free",
+  "meta-llama/llama-3.1-8b-instruct:free",
+  "mistralai/mistral-7b-instruct:free",
+  "deepseek/deepseek-r1:free",
+  "microsoft/phi-3-medium-128k-instruct:free",
 ];
 
 /**
@@ -134,32 +149,23 @@ const BUILTIN_OPENROUTER_FALLBACKS = [
  * Не включаем модели, которые на probe отвечали по-английски (nemotron-3-*) или часто 404.
  */
 const BUILTIN_NVIDIA_FALLBACKS = [
-  // Tier A — лучшие для RU (DeepSeek / Qwen / GLM / MiniMax)
-  "deepseek-ai/deepseek-v4-flash",
-  "deepseek-ai/deepseek-v4-pro",
-  "qwen/qwen3.5-122b-a10b",
-  "qwen/qwen3-next-80b-a3b-instruct",
-  "qwen/qwen3.5-397b-a17b",
+  // Tier A — лучшие для RU (DeepSeek / GLM / MiniMax / StepFun)
+  "deepseek-ai/deepseek-v4-flash-0731",
   "z-ai/glm-5.2",
   "minimaxai/minimax-m3",
-  "minimaxai/minimax-m2.7",
+  "stepfun-ai/step-3.7-flash",
+  "moonshotai/kimi-k2.6",
   // Tier B — быстрые, стабильно отдают русский (Mistral family)
-  "mistralai/mistral-medium-3.5-128b",
-  "mistralai/mistral-small-4-119b-2603",
   "mistralai/mistral-nemotron",
-  "mistralai/ministral-14b-instruct-2512",
-  "mistralai/mistral-large-3-675b-instruct-2512",
   "mistralai/mistral-large-2-instruct",
-  // Tier C — Llama / Nemotron-super (RU ок, больше AI-tell)
+  "mistralai/mistral-large",
+  // Tier C — Llama / Nemotron-super (RU ок)
   "meta/llama-3.3-70b-instruct",
   "nvidia/llama-3.3-nemotron-super-49b-v1.5",
   "nvidia/llama-3.3-nemotron-super-49b-v1",
   "meta/llama-3.1-70b-instruct",
-  "meta/llama-4-maverick-17b-128e-instruct",
   "google/gemma-4-31b-it",
-  // Tier D — лёгкий аварийный запас
-  "meta/llama-3.1-8b-instruct",
-  "mistralai/mistral-7b-instruct-v0.3",
+  "google/gemma-3-12b-it",
 ];
 
 /** Временный cooldown: model → timestamp до которого не трогаем. */
@@ -167,12 +173,35 @@ const nvidiaModelCooldownUntil = new Map<string, number>();
 /** Модели с 404/410 — не долбим до перезапуска процесса. */
 const nvidiaModelDead = new Set<string>();
 
+/** Кэш заморозки API-ключей: key → timestamp до которого ключ в cooldown. */
+const apiKeyCooldownUntil = new Map<string, number>();
+
+export function markKeyCooldown(key: string, ms: number, reason: string): void {
+  if (!key) return;
+  const until = Date.now() + ms;
+  apiKeyCooldownUntil.set(key, until);
+  console.warn(
+    `[LLM Key Cooldown] Ключ ...${key.slice(-6)} заморожен на ${Math.round(ms / 1000)}s (${reason})`,
+  );
+}
+
+export function isKeyOnCooldown(key: string): boolean {
+  if (!key) return false;
+  const until = apiKeyCooldownUntil.get(key);
+  if (!until) return false;
+  if (Date.now() >= until) {
+    apiKeyCooldownUntil.delete(key);
+    return false;
+  }
+  return true;
+}
+
 /** Порядок по актуальной доступности; uniquePreserve уберёт повтор primary. */
 const BUILTIN_GEMINI_FALLBACKS = [
-  "gemini-3.5-flash",
-  "gemini-2.0-flash",
+  "gemini-flash-latest",
+  "gemini-3.1-flash-lite",
   "gemini-2.5-flash-lite",
-  "gemini-2.5-flash",
+  "gemini-3.5-flash-lite",
 ];
 
 const DEFAULT_GEMINI_TIMEOUT_MS = 45_000;
@@ -240,8 +269,7 @@ export function collectGroqKeys(): string[] {
 }
 
 export function collectOpenrouterKeys(): string[] {
-  const fromEnv = keysFromEnvList(["OPENROUTER_API_KEY", "OPENROUTER_API_KEY_2"]);
-  return mergeKeys(credentialsAls.getStore()?.openrouterApiKeys, fromEnv);
+  return [];
 }
 
 /** Разобрать apiKeys из body UI (строка или { gemini, nvidia, groq, openrouter }). */
@@ -361,7 +389,7 @@ export function markNvidiaModelCooldown(model: string, reason: string, ms?: numb
 }
 
 export function markNvidiaModelDead(model: string, reason: string): void {
-  nvidiaModelDead.set(model, reason);
+  nvidiaModelDead.add(model);
   nvidiaModelCooldownUntil.delete(model);
   console.warn(`NVIDIA dead «${model}» — skip until restart (${reason})`);
 }
@@ -582,14 +610,49 @@ export function rotateGeminiKey(): GoogleGenAI | null {
   return getGeminiClient();
 }
 
-export function isDailyQuotaExhausted(error: unknown): boolean {
+/**
+ * Извлекает retryDelay (в секундах) из ответа Google 429.
+ * Google возвращает details[].@type=RetryInfo с retryDelay: "43s" или "86400s".
+ * Если retryDelay >= 3600s → суточная квота. Если < 3600s → минутный RPM.
+ */
+export function extractGeminiRetryDelaySeconds(error: unknown): number | null {
+  // Поле, которое мы сами проставляем в callGeminiOnce после парсинга тела
+  if (typeof (error as any)?.retryDelaySec === "number") {
+    return (error as any).retryDelaySec;
+  }
   const message = String((error as any)?.message ?? error ?? "");
-  return (
-    message.includes("PerDay")
-    || message.includes("generate_content_free_tier_requests")
-    || message.includes("GenerateRequestsPerDay")
-    || message.includes("RESOURCE_EXHAUSTED")
-  );
+  // Из текста сообщения: "retry in 43.5s" или "retry in 43s"
+  const m = message.match(/retry in ([\d\.]+)s/i);
+  if (m) return parseFloat(m[1]);
+  // Из тела HTTP-ответа (если error.body присутствует)
+  try {
+    const body = (error as any)?.body;
+    if (typeof body === "string") {
+      const parsed = JSON.parse(body);
+      for (const d of (parsed?.error?.details ?? [])) {
+        if (d?.["@type"]?.includes("RetryInfo") && d?.retryDelay) {
+          return parseFloat(String(d.retryDelay).replace(/[^\d.]/g, ""));
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+export function isDailyQuotaExhausted(error: unknown): boolean {
+  const retryDelay = extractGeminiRetryDelaySeconds(error);
+  // Если retryDelay присутствует и < 600 секунд → это RPM-лимит, НЕ дневная квота
+  if (retryDelay !== null) return retryDelay >= 600;
+
+  const message = String((error as any)?.message ?? error ?? "");
+  if (/exceeded.*quota|quota.*exceeded|billing.*details|out of.*credits/i.test(message)) {
+    return true;
+  }
+  
+  // Fallback: если retryDelay неизвестен — смотрим только на PerDay без PerMinute
+  return message.includes("GenerateRequestsPerDay") && !message.includes("PerMinute");
 }
 
 export function isGroqModelName(model: string): boolean {
@@ -694,6 +757,8 @@ export function isNvidiaModelFailoverError(error: unknown): boolean {
   const message = String((error as any)?.message ?? error ?? "");
   if (status === 401 || status === 403) return false; // ключ неверный — модели не помогут
   if ([429, 500, 502, 503, 504, 408, 404, 410, 402, 413, 400].includes(Number(status))) return true;
+  // fetch failed / network ошибки — тоже failover
+  if (/fetch failed|network|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|terminated/i.test(message)) return true;
   return /unavailable|not found|does not exist|capacity|rate.?limit|overloaded|timeout|timed out|abort|RESOURCE_EXHAUSTED|no healthy|model.*(disabled|retired|invalid|decommissioned)|quota|Gone|Insufficient credits|no endpoints|Request too large|too large for model/i.test(message);
 }
 
@@ -812,8 +877,12 @@ async function callNvidiaOnce(
  * 404/410 — модель «мёртвая» до рестарта; 503/timeout — cooldown, чтобы не ждать по кругу.
  */
 async function generateViaNvidia(params: LlmGenerateParams): Promise<LlmGenerateResult> {
-  const keys = collectNvidiaKeys();
-  if (!keys.length) throw new Error("NVIDIA_API_KEY is not configured.");
+  const allKeys = collectNvidiaKeys();
+  const keys = allKeys.filter((k) => !isKeyOnCooldown(k));
+  if (!keys.length) {
+    if (allKeys.length > 0) throw new Error("NVIDIA: все API-ключи находятся в cooldown.");
+    throw new Error("NVIDIA_API_KEY is not configured.");
+  }
 
   const models = nvidiaModelChain(params.model);
   const wantsJson = params.responseMimeType === "application/json" || Boolean(params.responseSchema);
@@ -837,13 +906,16 @@ async function generateViaNvidia(params: LlmGenerateParams): Promise<LlmGenerate
     }
     liveAttempts += 1;
 
-    for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
+    keyLoop: for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
+      const key = keys[keyIndex];
+      if (isKeyOnCooldown(key)) continue;
+
       const jsonModes = wantsJson ? [true, false] : [false];
       for (const withJson of jsonModes) {
         if (params.abortSignal?.aborted) throw new Error("Aborted by user");
         attempts += 1;
         try {
-          const result = await callNvidiaOnce(model, keys[keyIndex], params, withJson);
+          const result = await callNvidiaOnce(model, key, params, withJson);
           if (modelIndex > 0 || keyIndex > 0 || skippedCooldown > 0) {
             console.warn(`NVIDIA: успех на модели «${model}» (попытка #${attempts}, failover с предыдущих).`);
           }
@@ -858,31 +930,32 @@ async function generateViaNvidia(params: LlmGenerateParams): Promise<LlmGenerate
             continue;
           }
 
-          // Неверный ключ — пробуем следующий ключ, не жжём все модели
+          // Неверный ключ — замораживаем ключ и переходим к следующему
           if (status === 401 || status === 403) {
-            console.warn(`NVIDIA key #${keyIndex + 1} отклонён (${status}), следующий ключ…`);
-            break;
+            llmLog("error", `NVIDIA key #${keyIndex + 1} отклонён (${status}) → cooldown 24h`, "nvidia");
+            markKeyCooldown(key, 86_400_000, "nvidia-invalid-key");
+            break; // → следующий ключ
           }
 
           // Модель недоступна / квота / 5xx / timeout → cooldown + следующая
           if (isNvidiaModelFailoverError(error)) {
+            llmLog("warn", `NVIDIA «${model}» недоступна (${status ?? "err"}) → следующая модель`, "nvidia");
             console.warn(
-              `NVIDIA модель «${model}» недоступна (${status ?? "err"}): ${String(error?.message || "").slice(0, 120)} → следующая…`,
+              `NVIDIA модель «${model}» недоступна (${status ?? "err"}): ${String(error?.message || "").slice(0, 120)} → следующая модель…`,
             );
             if (status === 404 || status === 410 || /not found|does not exist|invalid model|Gone/i.test(body)) {
               markNvidiaModelDead(model, String(status || "not-found"));
-              break;
+              break keyLoop; // модель мёртвая → пропускаем все ключи, переходим к следующей модели
             }
             if (status === 429 && keyIndex + 1 < keys.length) {
-              console.warn(`NVIDIA key #${keyIndex + 1} rate-limited, next key…`);
-              break;
+              llmLog("warn", `NVIDIA key #${keyIndex + 1} rate-limit → cooldown 60s`, "nvidia");
+              markKeyCooldown(key, 60_000, "nvidia-rate-limit");
+              break; // → следующий ключ
             }
-            // 503 capacity / timeout / 5xx — не долбим эту модель на каждом следующем куске главы
             if (status === 503 || status === 429 || status === 408 || status === 502 || status === 504
               || /ResourceExhausted|capacity|timeout|overloaded/i.test(body + String(error?.message || ""))) {
               markNvidiaModelCooldown(model, String(status || "busy"));
             }
-            // Worker limit / total capacity — нет смысла перебирать 10 моделей по 40 с
             if (status === 503 || /ResourceExhausted|Worker local total request limit|capacity/i.test(body)) {
               capacityFails += 1;
               if (capacityFails >= NVIDIA_MAX_CAPACITY_FAILS) {
@@ -894,13 +967,23 @@ async function generateViaNvidia(params: LlmGenerateParams): Promise<LlmGenerate
                 throw err;
               }
             }
-            break; // next model
+            // Сетевая ошибка (fetch failed) — не зависаем, сразу выходим
+            if (!status && /fetch failed|network|ECONN|ETIMED|ENOTFOUND|terminated/i.test(String(error?.message || ""))) {
+              capacityFails += 1;
+              if (capacityFails >= 1) { // при первой же сетевой ошибке — уходим с NVIDIA
+                const netErr = new Error(`NVIDIA API: network error — переключаемся на другой провайдер`);
+                (netErr as any).status = 503;
+                (netErr as any).nvidiaChainTried = models.slice(0, modelIndex + 1);
+                throw netErr;
+              }
+            }
+            break keyLoop; // модель перегружена → следующая модель
           }
 
-          // Неизвестная ошибка — cooldown короткий + следующая
+          // Неизвестная ошибка — cooldown короткий + следующая модель
           console.warn(`NVIDIA «${model}» ошибка, пробуем дальше:`, String(error?.message || error).slice(0, 160));
           markNvidiaModelCooldown(model, "error", Math.min(30_000, nvidiaCooldownMs()));
-          break;
+          break keyLoop; // → следующая модель
         }
       }
     }
@@ -945,9 +1028,14 @@ async function callOpenAiCompatOnce(
         + "\n…\n[укорочено под лимит Groq free TPM; пиши полную сцену на русском ≥350 слов]";
     }
   }
-  const timeoutMs = wantsJson
-    ? Math.min(baseTimeout, 45_000)
-    : Math.min(Math.max(baseTimeout, 60_000), 60_000 + Math.floor(maxTok / 8));
+  // Groq: 25s (rate-limit частый, быстро переходим); OpenRouter: 30s (:free модели медленные но не 60s); остальные: 60s+
+  const timeoutMs = provider === "groq"
+    ? Math.min(baseTimeout, 25_000)
+    : provider === "openrouter"
+      ? Math.min(baseTimeout, 30_000)
+      : wantsJson
+        ? Math.min(baseTimeout, 45_000)
+        : Math.min(Math.max(baseTimeout, 60_000), 60_000 + Math.floor(maxTok / 8));
 
   const body: Record<string, unknown> = {
     model,
@@ -1026,8 +1114,10 @@ async function generateViaOpenAiChain(
   provider: "groq" | "openrouter",
   params: LlmGenerateParams,
 ): Promise<LlmGenerateResult> {
-  const keys = provider === "groq" ? collectGroqKeys() : collectOpenrouterKeys();
+  const allKeys = provider === "groq" ? collectGroqKeys() : collectOpenrouterKeys();
+  const keys = allKeys.filter((k) => !isKeyOnCooldown(k));
   if (!keys.length) {
+    if (allKeys.length > 0) throw new Error(`${provider}: все API-ключи находятся в cooldown.`);
     throw new Error(
       provider === "groq"
         ? "GROQ_API_KEY is not configured."
@@ -1047,75 +1137,84 @@ async function generateViaOpenAiChain(
   const wantsJson = params.responseMimeType === "application/json" || Boolean(params.responseSchema);
   let lastError: any = null;
   let attempts = 0;
-  // Один «круг» + при полном TPM 413 на free Groq — пауза и второй круг
-  const rounds = provider === "groq" ? 2 : 1;
 
-  for (let round = 0; round < rounds; round += 1) {
-    if (round > 0) {
-      console.warn(`${provider}: TPM/лимиты — пауза 55с перед повтором цепочки…`);
-      await delay(55_000, params.abortSignal);
-    }
+  for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
+    const model = models[modelIndex];
+    if (isNvidiaModelOnCooldown(`${provider}:${model}`)) continue;
 
-    for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
-      const model = models[modelIndex];
-      if (isNvidiaModelOnCooldown(`${provider}:${model}`)) continue;
+    keyLoop: for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
+      const key = keys[keyIndex];
+      if (isKeyOnCooldown(key)) continue;
 
-      for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
-        const jsonModes = wantsJson ? [true, false] : [false];
-        for (const withJson of jsonModes) {
-          if (params.abortSignal?.aborted) throw new Error("Aborted by user");
-          attempts += 1;
-          try {
-            const result = await callOpenAiCompatOnce(
-              provider,
-              baseUrl,
-              model,
-              keys[keyIndex],
-              params,
-              withJson,
-              extraHeaders,
-            );
-            if (modelIndex > 0 || keyIndex > 0 || round > 0) {
-              console.warn(`${provider}: успех на «${model}» (попытка #${attempts}).`);
-            }
-            // free Groq: маленькая пауза, чтобы не упираться в TPM на следующем куске
-            if (provider === "groq") {
-              await delay(1200, params.abortSignal);
-            }
-            return { ...result, failoverCount: Math.max(0, modelIndex + keyIndex + round) };
-          } catch (error: any) {
-            lastError = error;
-            const status = error?.status ?? error?.statusCode;
-            const body = String(error?.body || error?.message || "");
-
-            if (withJson && (status === 400 || /response_format|json_object/i.test(body))) continue;
-            if (status === 401 || status === 403) {
-              console.warn(`${provider} key #${keyIndex + 1} отклонён (${status})`);
-              break;
-            }
-            if (isNvidiaModelFailoverError(error)) {
-              console.warn(
-                `${provider} «${model}» недоступна (${status ?? "err"}): ${String(error?.message || "").slice(0, 100)} → следующая…`,
-              );
-              if (
-                status === 404 || status === 410
-                || /not found|does not exist|no endpoints|decommissioned/i.test(body)
-              ) {
-                markNvidiaModelDead(`${provider}:${model}`, String(status || "not-found"));
-              } else if (status === 402 || /Insufficient credits/i.test(body)) {
-                markNvidiaModelDead(`${provider}:${model}`, "402-credits");
-              } else if (status === 413 || /Request too large|too large for model|tokens per minute|TPM/i.test(body)) {
-                // TPM: короткая пауза, не «убиваем» модель надолго
-                markNvidiaModelCooldown(`${provider}:${model}`, "413-tpm", 20_000);
-              } else if (status === 503 || status === 429 || status === 408 || status === 502 || status === 504) {
-                markNvidiaModelCooldown(`${provider}:${model}`, String(status || "busy"), 45_000);
-              }
-              break;
-            }
-            console.warn(`${provider} «${model}» ошибка:`, String(error?.message || error).slice(0, 120));
-            markNvidiaModelCooldown(`${provider}:${model}`, "error", 30_000);
-            break;
+      const jsonModes = wantsJson ? [true, false] : [false];
+      for (const withJson of jsonModes) {
+        if (params.abortSignal?.aborted) throw new Error("Aborted by user");
+        attempts += 1;
+        try {
+          const result = await callOpenAiCompatOnce(
+            provider,
+            baseUrl,
+            model,
+            key,
+            params,
+            withJson,
+            extraHeaders,
+          );
+          if (modelIndex > 0 || keyIndex > 0) {
+            console.warn(`${provider}: успех на «${model}» (попытка #${attempts}).`);
           }
+          if (provider === "groq") {
+            await delay(500, params.abortSignal);
+          }
+          return { ...result, failoverCount: Math.max(0, modelIndex + keyIndex) };
+        } catch (error: any) {
+          lastError = error;
+          const status = error?.status ?? error?.statusCode;
+          const body = String(error?.body || error?.message || "");
+
+          if (withJson && status === 400 && /response_format|json_object/i.test(body)) {
+            continue;
+          }
+
+          // Неверный ключ → следующий ключ
+          if (status === 401 || status === 403) {
+            llmLog("error", `${provider} key #${keyIndex + 1} отклонён (${status}) → cooldown 24h`, provider);
+            markKeyCooldown(key, 86_400_000, `${provider}-invalid-key`);
+            break; // → следующий ключ
+          }
+
+          // Нет кредитов → следующий ключ
+          if (status === 402 || /Insufficient credits/i.test(body)) {
+            llmLog("error", `${provider} key #${keyIndex + 1} нет кредитов (${status}) → cooldown 12h`, provider);
+            markKeyCooldown(key, 43_200_000, `${provider}-no-credits`);
+            break; // → следующий ключ
+          }
+
+          // Модель не найдена → следующая модель (пропускаем все оставшиеся ключи)
+          if (status === 404 || status === 410 || /not found|does not exist|no endpoints|decommissioned/i.test(body)) {
+            llmLog("warn", `${provider} «${model}» не найдена (${status}) → следующая модель`, provider);
+            markNvidiaModelDead(`${provider}:${model}`, String(status || "not-found"));
+            break keyLoop; // → следующая модель
+          }
+
+          // TPM limit на ключе → следующий ключ
+          if (status === 413 || /tokens per minute|TPM|Rate limit/i.test(body)) {
+            llmLog("warn", `${provider} key #${keyIndex + 1} TPM limit → cooldown 20s`, provider);
+            markKeyCooldown(key, 20_000, `${provider}-tpm-limit`);
+            break; // → следующий ключ
+          }
+
+          // Модель перегружена/недоступна → следующая модель
+          if (status === 503 || status === 429 || status === 408 || status === 502 || status === 504) {
+            llmLog("warn", `${provider} «${model}» недоступна (${status}) → cooldown 45s`, provider);
+            markNvidiaModelCooldown(`${provider}:${model}`, String(status || "busy"), 45_000);
+            break keyLoop; // → следующая модель
+          }
+
+          // Неизвестная ошибка → следующая модель
+          llmLog("warn", `${provider} «${model}» ошибка: ${String(error?.message || error).slice(0, 80)}`, provider);
+          markNvidiaModelCooldown(`${provider}:${model}`, "error", 30_000);
+          break keyLoop; // → следующая модель
         }
       }
     }
@@ -1138,15 +1237,16 @@ async function callGeminiOnce(
   params: LlmGenerateParams,
 ): Promise<LlmGenerateResult> {
   const timeoutMs = geminiRequestTimeoutMs();
-  // thinkingBudget: 0 — иначе gemini-*-flash с «мышлением» висит десятки секунд на коротких запросах
   const config: Record<string, unknown> = {
     systemInstruction: params.systemInstruction,
     temperature: params.temperature ?? 0.7,
     responseMimeType: params.responseMimeType,
     responseSchema: params.responseSchema as any,
     maxOutputTokens: params.maxOutputTokens,
-    thinkingConfig: { thinkingBudget: 0 },
   };
+  if (/thinking|2\.5/i.test(modelName)) {
+    config.thinkingConfig = { thinkingBudget: 0 };
+  }
 
   const generatePromise = client.models.generateContent({
     model: modelName,
@@ -1167,7 +1267,23 @@ async function callGeminiOnce(
   try {
     response = await Promise.race([generatePromise, timeoutPromise]);
   } catch (error: any) {
-    // если generate всё же догонит — игнор; таймаут/ошибка пробрасываем
+    // Обогащаем ошибку SDK данными о retryDelay чтобы isDailyQuotaExhausted работал корректно
+    if (!error.body && error.message) {
+      // SDK иногда кладёт JSON прямо в message
+      const jsonMatch = error.message.match(/\{[\s\S]*"error"[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[0]);
+          error.body = jsonMatch[0];
+          error.status = error.status || parsed?.error?.code;
+          for (const d of (parsed?.error?.details ?? [])) {
+            if (d?.["@type"]?.includes("RetryInfo") && d?.retryDelay) {
+              (error as any).retryDelaySec = parseFloat(String(d.retryDelay).replace(/[^\d.]/g, ""));
+            }
+          }
+        } catch { /* ignore */ }
+      }
+    }
     throw error;
   } finally {
     if (timer) clearTimeout(timer);
@@ -1183,8 +1299,12 @@ async function callGeminiOnce(
 }
 
 async function generateViaGemini(params: LlmGenerateParams): Promise<LlmGenerateResult> {
-  const keys = collectGeminiKeys();
-  if (!keys.length) throw new Error("GEMINI_API_KEY is not configured.");
+  const allKeys = collectGeminiKeys();
+  const keys = allKeys.filter((k) => !isKeyOnCooldown(k));
+  if (!keys.length) {
+    if (allKeys.length > 0) throw new Error("Gemini: все API-ключи находятся в cooldown (квота/ошибки).");
+    throw new Error("GEMINI_API_KEY is not configured.");
+  }
 
   const models = geminiModelChain(params.model);
   let lastError: any = null;
@@ -1192,67 +1312,71 @@ async function generateViaGemini(params: LlmGenerateParams): Promise<LlmGenerate
 
   for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
     const model = models[modelIndex];
+    if (isNvidiaModelOnCooldown(`gemini:${model}`)) continue;
+
     for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
+      const key = keys[keyIndex];
+      if (isKeyOnCooldown(key)) continue;
+
       const ai = new GoogleGenAI({
-        apiKey: keys[keyIndex],
+        apiKey: key,
         httpOptions: { headers: { "User-Agent": "writers-studio" } },
       });
-      const maxRetries = 1;
-      for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-        if (params.abortSignal?.aborted) throw new Error("Aborted by user");
-        attempts += 1;
-        try {
-          const result = await callGeminiOnce(ai, model, params);
-          if (modelIndex > 0 || keyIndex > 0) {
-            console.warn(`Gemini: успех на «${model}» (попытка #${attempts}, failover).`);
-          }
-          return { ...result, failoverCount: modelIndex + keyIndex };
-        } catch (error: any) {
-          lastError = error;
-          const status = error?.status ?? error?.statusCode;
-          const message = String(error?.message ?? "");
 
-          if (status === 429 && isDailyQuotaExhausted(error)) {
-            console.warn(`Gemini key #${keyIndex + 1} quota exhausted, next key…`);
-            break; // go to next key
-          }
-
-          const causeCode = error?.cause?.code ?? error?.code;
-          const isNetworkError = status == null && (
-            causeCode === "ECONNRESET" || causeCode === "ETIMEDOUT" || causeCode === "ECONNREFUSED"
-            || message.includes("terminated") || message.includes("fetch failed")
-          );
-          
-          if (status === 408 || /timeout/i.test(message)) {
-            console.warn(`Gemini «${model}» timeout → следующая модель…`);
-            break; // too slow, try next model, don't try next key for timeout
-          }
-
-          const isRetryable = status === 503 || status === 429 || status === 500 || isNetworkError;
-          if (isRetryable && attempt < maxRetries) {
-            const delayMs = Math.min(1000 * 2 ** attempt, 6000) + Math.random() * 400;
-            console.warn(`Gemini «${model}» attempt ${attempt + 1} failed (${status}). Retry ${Math.round(delayMs)}ms`);
-            await delay(delayMs, params.abortSignal);
-            continue; // retry same key/model
-          }
-
-          if (status === 404 || status === 400 || status === 403 || status === 401) {
-            if (status === 403 || status === 401) {
-                console.warn(`Gemini key #${keyIndex + 1} invalid (${status}), next key…`);
-                break; // next key
-            }
-            console.warn(`Gemini «${model}» unavailable (${status}) → next model…`);
-            break; // next model
-          }
-          
-          if (isRetryable) {
-              console.warn(`Gemini key #${keyIndex + 1} rate-limited, next key…`);
-              break; // go to next key
-          }
-
-          console.warn(`Gemini «${model}» unknown error:`, message.slice(0, 120));
-          break; // next key or model
+      if (params.abortSignal?.aborted) throw new Error("Aborted by user");
+      attempts += 1;
+      try {
+        const result = await callGeminiOnce(ai, model, params);
+        if (modelIndex > 0 || keyIndex > 0) {
+          console.warn(`Gemini: успех на «${model}» (попытка #${attempts}, failover).`);
         }
+        return { ...result, failoverCount: modelIndex + keyIndex };
+      } catch (error: any) {
+        lastError = error;
+        const status = error?.status ?? error?.statusCode;
+        const message = String(error?.message ?? "");
+
+        if (status === 429) {
+          if (isDailyQuotaExhausted(error)) {
+            console.warn(`Gemini key #${keyIndex + 1} daily quota exhausted → key cooldown 1h`);
+            markKeyCooldown(key, 3_600_000, "gemini-daily-quota");
+            continue;
+          } else {
+            let delayMs = 20000;
+            const parsedDelay = extractGeminiRetryDelaySeconds(error);
+            if (parsedDelay !== null) {
+              delayMs = parsedDelay * 1000 + 1000;
+            } else {
+              const match = message.match(/retry in ([\d\.]+)s/i);
+              if (match && match[1]) {
+                delayMs = Math.ceil(parseFloat(match[1]) * 1000) + 1000;
+              }
+            }
+            console.warn(`Gemini key #${keyIndex + 1} RPM limit. Охлаждаем ключ на ${Math.round(delayMs/1000)}с и идём дальше...`);
+            markKeyCooldown(key, delayMs, "gemini-rpm-limit");
+            continue;
+          }
+        }
+
+        if (status === 401 || status === 403) {
+          console.warn(`Gemini key #${keyIndex + 1} invalid (${status}) → key cooldown 24h`);
+          markKeyCooldown(key, 86_400_000, "gemini-invalid-key");
+          continue;
+        }
+
+        if (status === 404 || status === 400) {
+          console.warn(`Gemini модель «${model}» недоступна (${status}) → next model`);
+          markNvidiaModelDead(`gemini:${model}`, String(status));
+          break;
+        }
+
+        if (status === 408 || /timeout/i.test(message)) {
+          console.warn(`Gemini «${model}» timeout → next model`);
+          markNvidiaModelCooldown(`gemini:${model}`, "timeout", 45_000);
+          break;
+        }
+
+        console.warn(`Gemini «${model}» ошибка (${status ?? "net"}), пробуем дальше:`, message.slice(0, 120));
       }
     }
   }
@@ -1316,7 +1440,7 @@ export async function llmGenerate(params: LlmGenerateParams): Promise<LlmGenerat
       }
       
       console.warn(`[Fallback] Провайдер ${preferred} недоступен. Пробуем резервные...`);
-      const soft: LlmProviderId[] = ["gemini", "groq", "openrouter", "nvidia"].filter(x => x !== preferred) as LlmProviderId[];
+      const soft: LlmProviderId[] = ["gemini", "groq", "nvidia"].filter(x => x !== preferred) as LlmProviderId[];
       let lastSoftError: any = error;
       
       for (const id of soft) {
@@ -1340,23 +1464,38 @@ export async function llmGenerate(params: LlmGenerateParams): Promise<LlmGenerat
     preferred === "nvidia" ? "gemini" : preferred,
     "gemini",
     "groq",
-    "openrouter",
     "nvidia",
   ]) as LlmProviderId[];
 
-  console.warn(`LLM auto order: ${order.filter((id) => has[id]).join(" → ")} (model=${params.model || "—"})`);
+  const activeOrder = order.filter((id) => has[id]);
+  llmLog("info", `Авто: ${activeOrder.join(" → ")} (model=${params.model || "—"})`);
+  console.warn(`LLM auto order: ${activeOrder.join(" → ")} (model=${params.model || "—"})`);
 
   let lastError: any = null;
+  let networkFailCount = 0; // счётчик сетевых сбоев подряд
   for (const id of order) {
     if (!has[id]) continue;
     try {
       if (id !== order.find((x) => has[x])) {
+        llmLog("warn", `Фейловер → ${id}…`, id);
         return await runOne(id, `auto-failover → ${id}…`);
       }
       return await runOne(id);
     } catch (error: any) {
       lastError = error;
-      console.warn(`Провайдер ${id} не сработал: ${String(error?.message || error).slice(0, 120)}`);
+      const msg = String(error?.message || error);
+      // Детектор тотального сетевого сбоя: если провайдер говорит fetch failed — считаем
+      if (/fetch failed|network error|ECONN|ETIMED|ENOTFOUND/i.test(msg) || /network/i.test(msg)) {
+        networkFailCount += 1;
+        if (networkFailCount >= 2) {
+          llmLog("error", `Сетевой сбой (${networkFailCount} провайдера не отвечают) — прерываем`, id);
+          throw new Error(`Нет соединения с LLM-серверами. Проверьте подключение к интернету.`);
+        }
+      } else {
+        networkFailCount = 0; // сбрасываем если это не сетевая ошибка
+      }
+      llmLog("error", `${id} не сработал: ${msg.slice(0, 100)}`, id);
+      console.warn(`Провайдер ${id} не сработал: ${msg.slice(0, 120)}`);
     }
   }
 

@@ -274,7 +274,9 @@ export async function mergeProfiles(existing: DeepStyleProfile, newSample: strin
     metaphorTypes: Array.from(new Set([...existing.patterns.metaphorTypes, ...newPatterns.metaphorTypes])),
     narrativePace: existing.patterns.narrativePace + " / " + newPatterns.narrativePace,
     emotionalRange: existing.patterns.emotionalRange + " / " + newPatterns.emotionalRange,
-    avoidances: Array.from(new Set([...existing.patterns.avoidances, ...newPatterns.avoidances]))
+    avoidances: Array.from(new Set([...existing.patterns.avoidances, ...newPatterns.avoidances])),
+    frequentVerbs: Array.from(new Set([...(existing.patterns.frequentVerbs ?? []), ...(newPatterns.frequentVerbs ?? [])])).slice(0, 20),
+    frequentAdverbs: Array.from(new Set([...(existing.patterns.frequentAdverbs ?? []), ...(newPatterns.frequentAdverbs ?? [])])).slice(0, 20),
   };
 
   // Объединяем фрагменты

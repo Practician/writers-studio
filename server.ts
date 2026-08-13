@@ -46,6 +46,7 @@ import {
   getLlmStatus,
   isDailyQuotaExhausted,
   llmGenerate,
+  llmLogBus,
   llmTextOrThrow,
   normalizeProviderPreference,
   parseRequestCredentials,
@@ -116,6 +117,27 @@ async function generateJsonBlocks(
 
 app.get("/api/llm/status", (_req, res) => {
   res.json(getLlmStatus());
+});
+
+// GET /api/llm/log-stream — SSE-лог событий ротации ключей/провайдеров в реальном времени
+app.get("/api/llm/log-stream", (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.write(": connected\n\n");
+
+  const onLog = (event: import("./server/llmProvider.js").LlmLogEvent) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  };
+
+  llmLogBus.on("log", onLog);
+
+  req.on("close", () => {
+    llmLogBus.off("log", onLog);
+  });
 });
 
 // Safe author-voice editing pipeline. It deliberately does not use detector scores,
@@ -863,7 +885,16 @@ app.post("/api/agent/start", async (req, res) => {
   try {
     const body = req.body;
     const taskId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const taskType = body.taskType || "write_chapter";
+    const taskType = ((): "write_chapter" | "rewrite_chapter" | "continue_text" | "write_scene" => {
+      const raw = body.taskType || "write_chapter";
+      if (raw === "draft") return "write_chapter";
+      if (raw === "rewrite") return "rewrite_chapter";
+      if (raw === "continue") return "continue_text";
+      if (raw === "scene") return "write_scene";
+      // Принимаем канонические значения напрямую
+      if (["write_chapter", "rewrite_chapter", "continue_text", "write_scene"].includes(raw)) return raw as any;
+      return "write_chapter";
+    })();
     const model = resolveSelectedModel(body.model, resolveProvider(llmProvider));
     const config = {
       maxDraftAttempts: Math.min(5, Math.max(1, Number(body.maxDraftAttempts) || 3)),
@@ -889,8 +920,8 @@ app.post("/api/agent/start", async (req, res) => {
 
     const orchestrator = new AgentOrchestrator(globalEpisodicMemory);
 
-    // Запуск в фоне — не блокируем HTTP-ответ
-    runWithLlmRequestContext({ preference: llmProvider, credentials }, async () => {
+    // Запуск в фоне — не блокируем HTTP-ответ, но сохраняем Promise чтобы поймать фатальные ошибки
+    void runWithLlmRequestContext({ preference: llmProvider, credentials }, async () => {
       try {
         await orchestrator.execute(task);
       } catch (error) {

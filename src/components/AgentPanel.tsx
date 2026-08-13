@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { loadAuthorProfile } from '../lib/authorStorage';
 import { 
   Bot, 
   Play, 
@@ -101,25 +102,76 @@ export default function AgentPanel({
     setCurrentState('planning');
     setIsRunning(true);
 
+    // Маппинг taskType: UI-значения → канонические API-значения
+    const taskTypeMap: Record<string, string> = {
+      draft: 'write_chapter',
+      rewrite: 'rewrite_chapter',
+      continue: 'continue_text',
+      scene: 'write_scene',
+    };
+    const canonTaskType = taskTypeMap[taskType] ?? taskType;
+
+    // Маппинг depth: UI-значения → канонические для humanizeDepth
+    const depthMap: Record<string, string> = {
+      fast: 'fast',
+      balance: 'balanced',
+      max: 'maximum',
+    };
+    const humanizeDepth = depthMap[depth] ?? 'balanced';
+
+    // Найти предыдущую главу (для континуитета)
+    let previousChapterContent = '';
+    if (activeChapter && story.chapters.length > 1) {
+      const chapIdx = story.chapters.findIndex(c => c.id === activeChapter.id);
+      if (chapIdx > 0) {
+        previousChapterContent = story.chapters[chapIdx - 1].content || '';
+      }
+    }
+
+    // Загрузить паспорт автора (для стиля)
+    const profile = await loadAuthorProfile(story.id);
+
     try {
       const response = await fetch('/api/agent/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          taskType,
+          // Тип задачи (API-каноническое значение)
+          taskType: canonTaskType,
           storyId: story.id,
           chapterId: activeChapter?.id,
-          config: {
-            craftThreshold,
-            minWords,
-            maxWords,
-            depth
-          }
+
+          // Полный input для оркестратора
+          input: {
+            title: story.title,
+            genre: story.genre,
+            description: story.description,
+            chapterTitle: activeChapter?.title || '',
+            chapterSummary: activeChapter?.summary || '',
+            previousChapter: previousChapterContent,
+            worldBible: story.worldBible || '',
+            bookPlan: story.bookPlan || '',
+            customPrompt: '',
+            authorSample: profile?.sample || '',
+            voiceSheet: profile?.voiceSheet,
+          },
+
+          // Конфиг плоский как ожидает сервер
+          minCraftScore: craftThreshold,
+          targetWordCountMin: minWords,
+          targetWordCountMax: maxWords,
+          humanizeDepth,
+
+          // Провайдер и модель из настроек UI
+          model: selectedModel,
+          llmProvider,
+          apiKeys: llmApiFields,
         })
       });
 
       if (!response.ok) {
-        throw new Error('Failed to start agent');
+        const errData = await response.json().catch(() => ({})) as any;
+        throw new Error(errData?.error || `HTTP ${response.status}`);
       }
 
       const data = await response.json();
@@ -149,23 +201,44 @@ export default function AgentPanel({
         
         switch (data.type) {
           case 'state_change':
-            setCurrentState(data.state);
-            addLog('info', `Переход в состояние: ${data.state}`);
+            // Сервер шлёт {from, to} — используем data.to
+            setCurrentState(data.to);
+            addLog('info', `Переход: ${data.from} → ${data.to}`);
             break;
             
-          case 'thought':
-            addLog('thought', data.content);
+          case 'reasoning':
+            // Сервер шлёт {thought} — не 'thought' не 'content'
+            addLog('thought', data.thought || '');
             break;
             
           case 'tool_call':
-            addLog('tool', data.content, data.toolName);
+            // Сервер шлёт {tool, args} — не content/toolName
+            addLog('tool', JSON.stringify(data.args || {}), data.tool);
+            break;
+
+          case 'tool_result':
+            addLog('info', `Инструмент ${data.tool}: ${data.summary}`);
             break;
             
+          case 'draft_preview':
+            addLog('info', `Черновик готов: ${data.wordCount} слов`);
+            break;
+
           case 'evaluation':
-            setEvaluation(data.evaluation);
+            // Данные на корне события, не вложены
+            setEvaluation({
+              craftScore: data.craftScore,
+              burstiness: data.burstiness,
+              issues: data.issues || [],
+            });
+            break;
+
+          case 'correction':
+            addLog('info', `Проход правки ${data.pass}: улучшено ${(data.improved || []).length} блоков`);
             break;
             
-          case 'result':
+          case 'completed':
+            // Сервер шлёт 'completed', фронтенд ждал 'result'
             setResult(data.result);
             setCurrentState('completed');
             setIsRunning(false);
@@ -173,10 +246,11 @@ export default function AgentPanel({
             break;
             
           case 'error':
-            setError(data.error);
+            // Сервер шлёт {message, recoverable} — не {error}
+            setError(data.message || 'Ошибка агента');
             setIsRunning(false);
             setCurrentState('error');
-            es.close();
+            if (!data.recoverable) es.close();
             break;
         }
       } catch (err) {

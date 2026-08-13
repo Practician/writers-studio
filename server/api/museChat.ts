@@ -70,7 +70,7 @@ museChatRouter.post("/stream", async (req, res) => {
         // For brevity and since the project heavily relies on llmProvider.llmGenerate:
         const { llmGenerate } = await import("../llmProvider.js");
         const result = await llmGenerate({
-          prompt,
+          contents: prompt,
           systemInstruction,
           model: model as string,
           temperature: 0.7
