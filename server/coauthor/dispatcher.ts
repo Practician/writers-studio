@@ -7,9 +7,11 @@ import {
   qualityReportFromAiTell,
   type CoauthorPlanStep,
   type CoauthorRun,
+  type ContextManifestItem,
 } from "../../src/lib/coauthorContracts";
 import { DEFAULT_MAX_AI_TELL_SCORE } from "../../src/lib/coauthorQuality";
 import { CoauthorRunStore } from "./runStore";
+import { assembleCoauthorContext } from "./contextAssembler";
 
 export type CoauthorGenerate = (systemInstruction: string, prompt: string, model: string) => Promise<string>;
 
@@ -38,19 +40,50 @@ function authorVoicePromptBlock(run: CoauthorRun, target: string): string {
   return `\n\nПАСПОРТ АВТОРСКОГО ГОЛОСА (обязательное ограничение):\n${passport}\n\nГЛУБОКИЙ ПРОФИЛЬ (метрики, паттерны и эталоны; используй как диапазоны, не как квоты):\n${deepProfile}\n\nЭТАЛОНЫ АВТОРСКОЙ МАНЕРЫ (бери только ритм, интонацию и лексику; не переноси события):\n"""\n${excerpts}\n"""\n\nСохраняй индивидуальные неровности и конкретность автора. Не добавляй искусственные ошибки, разговорные частицы или пунктуацию ради числового сходства.`;
 }
 
-function buildPrompt(run: CoauthorRun): { system: string; prompt: string; modifiesText: boolean } {
+function authorRulesPromptBlock(run: CoauthorRun): string {
+  const rules = run.context.input.authorRules;
+  if (!rules) return "";
+  const must = rules.must.map((rule) => `- ОБЯЗАТЕЛЬНО: ${rule}`).join("\n");
+  const avoid = rules.avoid.map((rule) => `- НЕ ИСПОЛЬЗОВАТЬ: ${rule}`).join("\n");
+  const preferences = rules.preferences.map((rule) => `- ПРЕДПОЧТИТЕЛЬНО: ${rule}`).join("\n");
+  const body = [must, avoid, preferences].filter(Boolean).join("\n");
+  return body ? `\n\nЯВНЫЕ ПРАВИЛА АВТОРА (они важнее статистического сходства):\n${body}` : "";
+}
+
+export function buildCoauthorPrompt(run: CoauthorRun): { system: string; prompt: string; modifiesText: boolean; manifest: ContextManifestItem[] } {
   const input = run.context.input;
   const target = input.selectedText?.trim() || input.baseText;
-  const context = [
-    input.title ? `Книга: ${input.title}` : "",
-    input.genre ? `Жанр: ${input.genre}` : "",
-    input.chapterTitle ? `Глава: ${input.chapterTitle}` : "",
-    input.chapterSummary ? `Синопсис: ${input.chapterSummary}` : "",
-    input.previousChapter ? `Предыдущая глава:\n${input.previousChapter.slice(-8_000)}` : "",
-    input.worldBible ? `Библия мира:\n${input.worldBible.slice(0, 8_000)}` : "",
-    input.bookPlan ? `План книги:\n${input.bookPlan.slice(0, 5_000)}` : "",
-  ].filter(Boolean).join("\n\n");
+  const assembled = assembleCoauthorContext(input);
+  const context = assembled.text;
   const voiceBlock = authorVoicePromptBlock(run, target);
+  const rulesBlock = authorRulesPromptBlock(run);
+  const manifest: ContextManifestItem[] = [...assembled.manifest];
+  if (voiceBlock.trim()) {
+    manifest.push({
+      id: "context-author-voice",
+      sourceType: "author_voice",
+      label: "Паспорт авторского голоса",
+      reason: "Авторский режим требует подтверждённый паспорт, глубокий профиль и эталоны манеры",
+      relevance: "required",
+      inclusionPolicy: "always",
+      tokenEstimate: Math.ceil(voiceBlock.length / 4),
+      excerpt: "Паспорт, глубокий профиль и отобранные эталоны автора",
+      status: "included",
+    });
+  }
+  if (rulesBlock.trim()) {
+    manifest.push({
+      id: "context-author-rules",
+      sourceType: "author_rule",
+      label: "Явные правила автора",
+      reason: "Правила автора имеют приоритет над статистическим стилевым сходством",
+      relevance: "required",
+      inclusionPolicy: "always",
+      tokenEstimate: Math.ceil(rulesBlock.length / 4),
+      excerpt: rulesBlock.replace(/\s+/g, " ").trim().slice(0, 360),
+      status: "included",
+    });
+  }
   const system = [
     "Ты — литературный соавтор. Сохраняй факты, POV и авторский голос.",
     "Не утверждай, что определил авторство текста. Локальные стилевые сигналы — только подсказки для редакторской работы.",
@@ -60,15 +93,17 @@ function buildPrompt(run: CoauthorRun): { system: string; prompt: string; modifi
   if (run.intent === "brainstorm") {
     return {
       system,
-      prompt: `${context}${voiceBlock}\n\nЦель автора: ${run.goal}\n\nПредложи 5 конкретных сюжетных вариантов с конфликтом, ставкой и последствием. Не меняй рукопись.`,
+      prompt: `${context}${voiceBlock}${rulesBlock}\n\nЦель автора: ${run.goal}\n\nПредложи 5 конкретных сюжетных вариантов с конфликтом, ставкой и последствием. Не меняй рукопись.`,
       modifiesText: false,
+      manifest,
     };
   }
   if (run.intent === "plan") {
     return {
       system,
-      prompt: `${context}${voiceBlock}\n\nЦель автора: ${run.goal}\n\nСоставь короткий план следующих сцен: бит, конфликт, действие героя, новое последствие. Не пиши главу и не меняй рукопись.`,
+      prompt: `${context}${voiceBlock}${rulesBlock}\n\nЦель автора: ${run.goal}\n\nСоставь короткий план следующих сцен: бит, конфликт, действие героя, новое последствие. Не пиши главу и не меняй рукопись.`,
       modifiesText: false,
+      manifest,
     };
   }
   if (run.intent === "audit") {
@@ -76,6 +111,7 @@ function buildPrompt(run: CoauthorRun): { system: string; prompt: string; modifi
       system,
       prompt: `${context}${voiceBlock}\n\nТекст для аудита:\n"""\n${target.slice(0, 12_000)}\n"""\n\nЦель автора: ${run.goal}\n\nВерни редакторский отчёт: риски канона, повторы, места для уточнения и что лучше оставить. Не переписывай текст.`,
       modifiesText: false,
+      manifest,
     };
   }
 
@@ -84,8 +120,9 @@ function buildPrompt(run: CoauthorRun): { system: string; prompt: string; modifi
     : "Бережно переработай целевой фрагмент. Сохрани события, факты, имена и POV. Верни только переработанный фрагмент.";
   return {
     system,
-    prompt: `${context}${voiceBlock}\n\nЦель автора: ${run.goal}\n\nЦелевой текст:\n"""\n${target.slice(0, 12_000)}\n"""\n\n${action}`,
+    prompt: `${context}${voiceBlock}${rulesBlock}\n\nЦель автора: ${run.goal}\n\nЦелевой текст:\n"""\n${target.slice(0, 12_000)}\n"""\n\n${action}`,
     modifiesText: true,
+    manifest,
   };
 }
 
@@ -97,11 +134,12 @@ export async function executeCoauthorRun(
   const plan = planFor(run);
   store.updatePlan(run.id, plan);
   store.setStatus(run.id, run.mode === "quick" ? "running" : "planning", "Соавтор готовит контекст задачи");
-  store.addCheckpoint(run.id, "Контекст", "Зафиксированы текст, канон и авторская цель");
+  const built = buildCoauthorPrompt(run);
+  store.setContextManifest(run.id, built.manifest);
+  store.addCheckpoint(run.id, "Контекст", `Зафиксированы текст, канон, авторская цель и ${built.manifest.length} источников контекста`);
   plan[0] && (plan[0].status = "completed");
   store.updatePlan(run.id, plan);
 
-  const built = buildPrompt(run);
   store.setStatus(run.id, "running", "Соавтор готовит вариант");
   store.addCheckpoint(run.id, "Генерация", "Создаётся результат без автоматического применения к рукописи");
   const output = (await generate(built.system, built.prompt, run.options.model)).trim();

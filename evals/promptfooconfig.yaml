@@ -1,0 +1,8 @@
+description: Writers Studio — локальные contract regressions
+prompts:
+  - "Цель: {{goal}}\n\nВход: {{input}}"
+providers:
+  - id: file://./mockProvider.mjs
+    label: local-fixture-provider
+tests:
+  - file://./fixtures/*.yaml

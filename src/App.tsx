@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Sparkles, 
   FileText, 
+  FileSearch,
   Wand2, 
   ChevronRight, 
   Download, 
@@ -61,6 +62,8 @@ const AIPanel = React.lazy(() => import("./components/AIPanel"));
 const AgentPanel = React.lazy(() => import("./components/AgentPanel"));
 const CoauthorPanel = React.lazy(() => import("./components/CoauthorPanel"));
 const CodexPanel = React.lazy(() => import("./components/CodexPanel"));
+const ManuscriptAuditPanel = React.lazy(() => import("./components/ManuscriptAuditPanel"));
+const SceneBoardPanel = React.lazy(() => import("./components/SceneBoardPanel"));
 
 export default function App() {
   const [stories, setStories] = useState<Story[]>([]);
@@ -68,7 +71,7 @@ export default function App() {
   storiesRef.current = stories;
   const [selectedStoryId, setSelectedStoryId] = useState<string>("");
   const [selectedChapterId, setSelectedChapterId] = useState<string>("");
-  const [activeTab, setActiveTab] = useState<"muse" | "characters" | "world" | "coauthor" | "ai" | "agent" | "codex">(() => {
+  const [activeTab, setActiveTab] = useState<"muse" | "characters" | "world" | "coauthor" | "ai" | "agent" | "codex" | "audit" | "scene">(() => {
     return (localStorage.getItem("writers_studio_global_active_tab") as any) || "muse";
   });
   const [selectedText, setSelectedText] = useState("");
@@ -1830,6 +1833,26 @@ export default function App() {
               >
                 📚 Кодекс
               </button>
+              <button
+                onClick={() => setActiveTab("audit")}
+                className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center whitespace-nowrap ${
+                  activeTab === "audit"
+                    ? "bg-slate-800 text-slate-100 font-bold border border-cyan-500/40"
+                    : "text-cyan-300 hover:text-cyan-100"
+                }`}
+              >
+                <FileSearch className="mr-1 inline h-3.5 w-3.5" />Аудит
+              </button>
+              <button
+                onClick={() => setActiveTab("scene")}
+                className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center whitespace-nowrap ${
+                  activeTab === "scene"
+                    ? "bg-slate-800 text-slate-100 font-bold border border-fuchsia-500/40"
+                    : "text-fuchsia-300 hover:text-fuchsia-100"
+                }`}
+              >
+                Сцена
+              </button>
             </div>
 
             {/* Scrollable Tab Views */}
@@ -1904,6 +1927,12 @@ export default function App() {
               )}
               {activeTab === "codex" && (
                 <CodexPanel story={activeStory} />
+              )}
+              {activeTab === "audit" && (
+                <ManuscriptAuditPanel story={activeStory} onOpenChapter={(chapterId) => setSelectedChapterId(chapterId)} />
+              )}
+              {activeTab === "scene" && (
+                <SceneBoardPanel story={activeStory} activeChapter={activeChapter} onSaveScenePlan={(chapterId, scenePlan) => handleUpdateStoryChapters(activeStory.chapters.map((chapter) => chapter.id === chapterId ? { ...chapter, scenePlan } : chapter))} />
               )}
               </React.Suspense>
             </div>

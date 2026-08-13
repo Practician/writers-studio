@@ -1,12 +1,13 @@
-import { AuthorProfileRecord, AuthorRevisionRecord, AgentHistoryEntry, CodexEntry } from "../types";
+import type { AgentHistoryEntry, AuthorProfileRecord, AuthorRevisionRecord, CodexEntry, ReviewTask } from "../types";
 
 const DB_NAME = "writers-studio-author-editor";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const PROFILES = "profiles";
 const REVISIONS = "revisions";
 const AGENT_EPISODES = "agent_episodes";
 const DEEP_PROFILES = "deep_profiles";
 const PROJECT_CODEX = "project_codex";
+const REVIEW_TASKS = "review_tasks";
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -37,6 +38,12 @@ function openDatabase(): Promise<IDBDatabase> {
         if (!database.objectStoreNames.contains(PROJECT_CODEX)) {
           const codexStore = database.createObjectStore(PROJECT_CODEX, { keyPath: "id" });
           codexStore.createIndex("byStory", "storyId", { unique: false });
+        }
+      }
+      if (oldVersion < 4) {
+        if (!database.objectStoreNames.contains(REVIEW_TASKS)) {
+          const reviewStore = database.createObjectStore(REVIEW_TASKS, { keyPath: "id" });
+          reviewStore.createIndex("byStory", "storyId", { unique: false });
         }
       }
     };
@@ -200,4 +207,38 @@ export async function deleteCodexEntry(id: string): Promise<void> {
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
   });
+}
+
+// ─── Review-задачи аудита рукописи ───────────────────────────────────────
+
+export async function saveReviewTask(task: ReviewTask): Promise<void> {
+  const database = await openDatabase();
+  try {
+    const transaction = database.transaction(REVIEW_TASKS, "readwrite");
+    await requestResult(transaction.objectStore(REVIEW_TASKS).put(task));
+  } finally {
+    database.close();
+  }
+}
+
+export async function listReviewTasks(storyId: string): Promise<ReviewTask[]> {
+  const database = await openDatabase();
+  try {
+    const transaction = database.transaction(REVIEW_TASKS, "readonly");
+    const index = transaction.objectStore(REVIEW_TASKS).index("byStory");
+    const records = await requestResult(index.getAll(storyId));
+    return records.sort((left: ReviewTask, right: ReviewTask) => right.updatedAt - left.updatedAt);
+  } finally {
+    database.close();
+  }
+}
+
+export async function deleteReviewTask(id: string): Promise<void> {
+  const database = await openDatabase();
+  try {
+    const transaction = database.transaction(REVIEW_TASKS, "readwrite");
+    await requestResult(transaction.objectStore(REVIEW_TASKS).delete(id));
+  } finally {
+    database.close();
+  }
 }

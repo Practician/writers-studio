@@ -1,0 +1,35 @@
+- vars:
+    id: protected-terms
+    goal: "Сохранить название и имена"
+    input: "Лабиринт. Ника не должна потерять ключ."
+    mockOutput: "Лабиринт. Ника сжала ключ в ладони."
+  assert:
+    - type: javascript
+      value: "output.includes('Лабиринт') && output.includes('Ника') && output.includes('ключ')"
+
+- vars:
+    id: explicit-review
+    goal: "Предложить только обратимое изменение"
+    input: "Сцена требует доработки."
+    mockOutput: "Предложение для review: заменить только выделенный фрагмент."
+  assert:
+    - type: javascript
+      value: "output.startsWith('Предложение для review:') && !output.includes('автоматически применено')"
+
+- vars:
+    id: pov-preservation
+    goal: "Не менять точку зрения"
+    input: "Я открыла дверь и услышала шаги."
+    mockOutput: "Я открыла дверь и услышала шаги в темноте."
+  assert:
+    - type: javascript
+      value: "output.startsWith('Я ') && !output.includes('Она открыла')"
+
+- vars:
+    id: voice-rule
+    goal: "Соблюдать явное авторское правило"
+    input: "Избежать слова-табу."
+    mockOutput: "Тишина сгустилась у порога."
+  assert:
+    - type: javascript
+      value: "!output.toLowerCase().includes('вдруг')"

@@ -161,6 +161,7 @@ export default function AgentPanel({
             baseText: currentDraft,
             authorSample: profile.sample,
             voiceSheet: profile.voiceSheet,
+            authorRules: profile.authorRules,
           },
 
           // Конфиг плоский как ожидает сервер

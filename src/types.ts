@@ -7,12 +7,30 @@ export interface Character {
   goals: string;
 }
 
+export interface SceneComment {
+  id: string;
+  text: string;
+  createdAt: number;
+  status: "open" | "resolved";
+}
+
+export interface ScenePlan {
+  pov: string;
+  purpose: string;
+  conflict: string;
+  turn: string;
+  outcome: string;
+  comments?: SceneComment[];
+  updatedAt: number;
+}
+
 export interface Chapter {
   id: string;
   title: string;
   summary: string;
   content: string;
   isPublished?: boolean;
+  scenePlan?: ScenePlan;
 }
 
 export interface WorldRule {
@@ -54,6 +72,15 @@ export interface AuthorVoiceSheet {
   evidence: AuthorVoiceEvidence[];
 }
 
+export interface AuthorRules {
+  /** Обязательные указания, которые важнее статистического профиля. */
+  must: string[];
+  /** Явные табу: слова, приёмы и редакторские запреты автора. */
+  avoid: string[];
+  /** Мягкие предпочтения, применимые, если они не конфликтуют с каноном. */
+  preferences: string[];
+}
+
 export interface AuthorProfileRecord {
   storyId: string;
   sample: string;
@@ -61,6 +88,7 @@ export interface AuthorProfileRecord {
   styleDescription: string;
   protectedTerms: string[];
   voiceSheet?: AuthorVoiceSheet;
+  authorRules?: AuthorRules;
   updatedAt: number;
 }
 
@@ -169,6 +197,7 @@ export interface AgentTaskInput {
   customPrompt: string;
   authorSample: string;
   voiceSheet?: AuthorVoiceSheet;
+  authorRules?: AuthorRules;
   canonDossier?: string;
 }
 
@@ -220,6 +249,56 @@ export interface AgentHistoryEntry {
   lessonsLearned: string[];
 }
 
+export interface CodexTemporalRange {
+  /** Глава, начиная с которой факт допустим в контексте. */
+  validFromChapterId?: string;
+  /** Глава, после которой факт больше не действует; пусто — действует далее. */
+  validToChapterId?: string;
+  note?: string;
+}
+
+export interface CodexMention {
+  chapterId: string;
+  chapterTitle: string;
+  start: number;
+  end: number;
+  matchedTerm: string;
+  excerpt: string;
+}
+
+export type ManuscriptAuditCategory = "continuity" | "temporal_canon" | "duplicate" | "structure" | "codex_coverage";
+
+export interface ManuscriptAuditIssue {
+  id: string;
+  category: ManuscriptAuditCategory;
+  severity: "info" | "warning" | "blocking";
+  title: string;
+  explanation: string;
+  chapterId?: string;
+  chapterTitle?: string;
+  excerpt?: string;
+  relatedCodexEntryId?: string;
+  recommendation: string;
+}
+
+export interface ManuscriptAuditReport {
+  storyId: string;
+  createdAt: number;
+  chapterCount: number;
+  wordCount: number;
+  issues: ManuscriptAuditIssue[];
+}
+
+export interface ReviewTask {
+  id: string;
+  storyId: string;
+  issue: ManuscriptAuditIssue;
+  status: "open" | "acknowledged" | "resolved" | "dismissed";
+  createdAt: number;
+  updatedAt: number;
+  note?: string;
+}
+
 export interface CodexEntry {
   id: string;
   storyId: string;
@@ -227,6 +306,10 @@ export interface CodexEntry {
   name: string;
   description: string;
   tags: string[];
+  /** Варианты имени, прозвища и устойчивые формы для поиска и индекса упоминаний. */
+  aliases?: string[];
+  temporal?: CodexTemporalRange;
+  mentions?: CodexMention[];
   createdAt: number;
   updatedAt: number;
 }

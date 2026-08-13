@@ -22,6 +22,7 @@ import {
 } from "../../src/lib/coauthorContracts";
 import { llmGenerate, llmTextOrThrow } from "../llmProvider";
 import { DeepStyleProfile, buildStyleInstructionBlock } from "./styleProfiler";
+import type { AuthorRules } from "../../src/types";
 import { SessionMemory, EpisodicMemory, EpisodeRecord, AgentPlan } from "./memory";
 import { AgentEvent, executeTool, ToolContext } from "./tools";
 
@@ -59,6 +60,7 @@ export interface AgentTaskInput {
   customPrompt?: string;
   authorSample?: string;
   voiceSheet?: unknown;
+  authorRules?: AuthorRules;
   /** Текст, на который будет рассчитан безопасный changeset результата. */
   baseText?: string;
 }
@@ -454,7 +456,7 @@ export class AgentOrchestrator {
 
     let styleInstruction = "";
     if (this.task!.styleProfile) {
-      styleInstruction = buildStyleInstructionBlock(this.task!.styleProfile);
+      styleInstruction = buildStyleInstructionBlock(this.task!.styleProfile, input.authorRules);
     }
 
     const continuityLore = `

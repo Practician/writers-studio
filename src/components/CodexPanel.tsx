@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { Users, Map, BookOpen, Plus, Trash2, Edit3, Save, X, Search, Tag, Database } from "lucide-react";
+import { Users, Map, BookOpen, Plus, Trash2, Edit3, Save, X, Search, Tag, Database, Clock3, RefreshCw } from "lucide-react";
 import { CodexEntry, Story } from "../types";
 import { listCodexEntries, saveCodexEntry, deleteCodexEntry } from "../lib/authorStorage";
+import { indexCodexMentions } from "../lib/codexRetrieval";
 
 interface CodexPanelProps {
   story: Story;
@@ -23,6 +24,11 @@ export default function CodexPanel({ story }: CodexPanelProps) {
   const [formType, setFormType] = useState<"character" | "location" | "lore">("character");
   const [formDescription, setFormDescription] = useState("");
   const [formTags, setFormTags] = useState("");
+  const [formAliases, setFormAliases] = useState("");
+  const [formValidFromChapterId, setFormValidFromChapterId] = useState("");
+  const [formValidToChapterId, setFormValidToChapterId] = useState("");
+  const [formTemporalNote, setFormTemporalNote] = useState("");
+  const [indexingMentions, setIndexingMentions] = useState(false);
 
   const fetchEntries = async () => {
     if (!storyId) return;
@@ -56,6 +62,10 @@ export default function CodexPanel({ story }: CodexPanelProps) {
     setFormType(activeTab === "all" ? "character" : activeTab);
     setFormDescription("");
     setFormTags("");
+    setFormAliases("");
+    setFormValidFromChapterId("");
+    setFormValidToChapterId("");
+    setFormTemporalNote("");
   };
 
   const handleEdit = (entry: CodexEntry) => {
@@ -65,6 +75,10 @@ export default function CodexPanel({ story }: CodexPanelProps) {
     setFormType(entry.type);
     setFormDescription(entry.description);
     setFormTags(entry.tags.join(", "));
+    setFormAliases((entry.aliases || []).join(", "));
+    setFormValidFromChapterId(entry.temporal?.validFromChapterId || "");
+    setFormValidToChapterId(entry.temporal?.validToChapterId || "");
+    setFormTemporalNote(entry.temporal?.note || "");
   };
 
   const handleDelete = async (id: string) => {
@@ -91,6 +105,11 @@ export default function CodexPanel({ story }: CodexPanelProps) {
       name: formName.trim(),
       description: formDescription.trim(),
       tags: tagsArray,
+      aliases: formAliases.split(",").map((alias) => alias.trim()).filter(Boolean),
+      temporal: formValidFromChapterId || formValidToChapterId || formTemporalNote.trim()
+        ? { validFromChapterId: formValidFromChapterId || undefined, validToChapterId: formValidToChapterId || undefined, note: formTemporalNote.trim() || undefined }
+        : undefined,
+      mentions: selectedEntryId ? entries.find((entry) => entry.id === selectedEntryId)?.mentions || [] : [],
       createdAt: selectedEntryId ? entries.find(e => e.id === selectedEntryId)?.createdAt || now : now,
       updatedAt: now,
     };
@@ -99,6 +118,18 @@ export default function CodexPanel({ story }: CodexPanelProps) {
     await fetchEntries();
     setIsEditing(false);
     setSelectedEntryId(entry.id);
+  };
+
+  const refreshMentionIndex = async () => {
+    if (!entries.length) return;
+    setIndexingMentions(true);
+    try {
+      const indexed = indexCodexMentions(entries, story.chapters);
+      await Promise.all(indexed.map((entry) => saveCodexEntry({ ...entry, updatedAt: Date.now() })));
+      setEntries(indexed);
+    } finally {
+      setIndexingMentions(false);
+    }
   };
 
   const handleImportFromProject = async () => {
@@ -171,13 +202,18 @@ export default function CodexPanel({ story }: CodexPanelProps) {
             <Database className="w-5 h-5 text-indigo-400" />
             Кодекс (Story Bible)
           </h2>
-          <button
-            onClick={handleCreate}
-            className="p-1.5 bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 rounded-md transition-all shadow-lg border border-indigo-500/30 backdrop-blur-md"
-            title="Добавить запись"
-          >
-            <Plus className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => void refreshMentionIndex()} disabled={indexingMentions || entries.length === 0} className="p-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-300 rounded-md transition-all border border-white/10" title="Обновить индекс упоминаний в главах">
+              <RefreshCw className={`w-4 h-4 ${indexingMentions ? "animate-spin" : ""}`} />
+            </button>
+            <button
+              onClick={handleCreate}
+              className="p-1.5 bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 rounded-md transition-all shadow-lg border border-indigo-500/30 backdrop-blur-md"
+              title="Добавить запись"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* Tabs */}
@@ -281,6 +317,20 @@ export default function CodexPanel({ story }: CodexPanelProps) {
                 </div>
               </div>
               
+              <div>
+                <label className="block text-slate-400 text-xs mb-1.5 uppercase tracking-wider font-semibold">Псевдонимы и варианты имени</label>
+                <input value={formAliases} onChange={(event) => setFormAliases(event.target.value)} className="w-full bg-slate-950/50 border border-white/10 rounded-lg px-3 py-2 text-slate-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all" placeholder="например: Ник, Ника, Николай — через запятую" />
+              </div>
+
+              <div className="rounded-lg border border-indigo-900/40 bg-indigo-950/15 p-3 space-y-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-indigo-200"><Clock3 className="w-3.5 h-3.5" />Временная применимость факта</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <select value={formValidFromChapterId} onChange={(event) => setFormValidFromChapterId(event.target.value)} className="bg-slate-950/50 border border-white/10 rounded-lg px-2 py-2 text-xs text-slate-200"><option value="">С начала книги</option>{story.chapters.map((chapter) => <option key={chapter.id} value={chapter.id}>С: {chapter.title}</option>)}</select>
+                  <select value={formValidToChapterId} onChange={(event) => setFormValidToChapterId(event.target.value)} className="bg-slate-950/50 border border-white/10 rounded-lg px-2 py-2 text-xs text-slate-200"><option value="">Действует далее</option>{story.chapters.map((chapter) => <option key={chapter.id} value={chapter.id}>До: {chapter.title}</option>)}</select>
+                </div>
+                <input value={formTemporalNote} onChange={(event) => setFormTemporalNote(event.target.value)} className="w-full bg-slate-950/50 border border-white/10 rounded-lg px-3 py-2 text-xs text-slate-200" placeholder="Примечание: что изменило факт и почему" />
+              </div>
+
               <div className="pt-2 flex justify-end gap-2">
                 <button
                   onClick={() => setIsEditing(false)}
@@ -371,6 +421,8 @@ export default function CodexPanel({ story }: CodexPanelProps) {
                       ))}
                     </div>
                   )}
+                  {(entry.temporal?.validFromChapterId || entry.temporal?.validToChapterId || entry.temporal?.note) && <p className="mt-2 flex items-center gap-1 text-[10px] text-indigo-300"><Clock3 className="w-3 h-3" />{entry.temporal?.note || "У записи задан временной диапазон"}</p>}
+                  {entry.mentions?.length ? <p className="mt-1 text-[10px] text-slate-500">Упоминаний в главах: {entry.mentions.length}</p> : null}
                 </div>
               ))
             )}

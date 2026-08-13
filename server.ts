@@ -45,7 +45,7 @@ import {
 } from "./server/chapterGenerate";
 import microEditRouter from "./server/api/microEdit";
 import { CoauthorRunStore } from "./server/coauthor/runStore";
-import { executeCoauthorRun } from "./server/coauthor/dispatcher";
+import { buildCoauthorPrompt, executeCoauthorRun } from "./server/coauthor/dispatcher";
 import {
   getLlmStatus,
   isDailyQuotaExhausted,
@@ -881,6 +881,95 @@ function asText(value: unknown, max = 50_000): string {
   return typeof value === "string" ? value.slice(0, max) : "";
 }
 
+function asTextList(value: unknown, maxItems = 30, maxItemLength = 500): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim().slice(0, maxItemLength))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+function asAuthorRules(value: unknown): { must: string[]; avoid: string[]; preferences: string[] } | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  const rules = {
+    must: asTextList(raw.must),
+    avoid: asTextList(raw.avoid),
+    preferences: asTextList(raw.preferences),
+  };
+  return rules.must.length || rules.avoid.length || rules.preferences.length ? rules : undefined;
+}
+
+function asCodexHits(value: unknown): Array<{ entryId: string; label: string; excerpt: string; reason: string; score: number }> {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 12).flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const raw = item as Record<string, unknown>;
+    const entryId = asText(raw.entryId, 200);
+    const label = asText(raw.label, 1_000);
+    const excerpt = asText(raw.excerpt, 1_000);
+    const reason = asText(raw.reason, 1_000);
+    const score = typeof raw.score === "number" && Number.isFinite(raw.score) ? Math.max(0, Math.min(1, raw.score)) : 0;
+    return entryId && label && excerpt ? [{ entryId, label, excerpt, reason, score }] : [];
+  });
+}
+
+app.post("/api/coauthor/voice-preview", (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const rawInput = body.input ?? {};
+    const baseText = asText(rawInput.baseText);
+    const profileRevision = asText(body.options?.authorVoice?.profileRevision, 128);
+    const voiceAvailable = asText(rawInput.authorSample).trim().length >= 300 && Boolean(rawInput.voiceSheet) && Boolean(profileRevision);
+    const input = {
+      title: asText(rawInput.title, 1_000),
+      genre: asText(rawInput.genre, 500),
+      description: asText(rawInput.description, 4_000),
+      chapterTitle: asText(rawInput.chapterTitle, 1_000),
+      chapterSummary: asText(rawInput.chapterSummary, 4_000),
+      baseText,
+      selectedText: asText(rawInput.selectedText),
+      previousChapter: asText(rawInput.previousChapter),
+      worldBible: asText(rawInput.worldBible),
+      bookPlan: asText(rawInput.bookPlan),
+      codexContext: asText(rawInput.codexContext, 6_000),
+      codexHits: asCodexHits(rawInput.codexHits),
+      authorSample: asText(rawInput.authorSample),
+      voiceSheet: rawInput.voiceSheet,
+      authorRules: asAuthorRules(rawInput.authorRules),
+      styleProfile: rawInput.styleProfile && typeof rawInput.styleProfile === "object" ? rawInput.styleProfile : undefined,
+    };
+    const common = {
+      mode: "quick" as const,
+      intent: (coauthorIntents.includes(body.intent) ? body.intent : "improve") as CoauthorIntent,
+      goal: asText(body.goal, 4_000) || "Предпросмотр авторских ограничений",
+      target: { storyId: String(body.target?.storyId || "preview"), chapterId: typeof body.target?.chapterId === "string" ? body.target.chapterId : undefined, baseRevision: revisionOf(baseText) },
+      input,
+      options: { humanizeDepth: "balanced" as const, model: resolveSelectedModel(body.options?.model, normalizeProviderPreference(body.llmProvider) || undefined) },
+    };
+    const withoutVoice = buildCoauthorPrompt(createCoauthorRun(common));
+    const withVoice = voiceAvailable
+      ? buildCoauthorPrompt(createCoauthorRun({ ...common, options: { ...common.options, authorVoice: { enabled: true, profileRevision } } }))
+      : undefined;
+    const summarize = (built: ReturnType<typeof buildCoauthorPrompt>) => ({
+      sourceCount: built.manifest.length,
+      manifest: built.manifest,
+      instructionPreview: built.prompt.replace(/\s+/g, " ").trim().slice(0, 900),
+    });
+    return res.json({
+      authorVoiceAvailable: voiceAvailable,
+      withAuthorVoice: withVoice ? summarize(withVoice) : null,
+      withoutAuthorVoice: summarize(withoutVoice),
+      note: voiceAvailable
+        ? "Это сравнение инструкций и источников контекста. Текст не генерируется и рукопись не изменяется."
+        : "Для авторского варианта сохраните паспорт, образец от 300 знаков и ревизию профиля.",
+    });
+  } catch (error: any) {
+    return res.status(400).json({ error: error?.message || "Не удалось построить предпросмотр авторского голоса" });
+  }
+});
+
 app.post("/api/coauthor/runs", async (req, res) => {
   const llmProvider = normalizeProviderPreference(req.body?.llmProvider);
   const credentials = parseRequestCredentials(req.body?.apiKeys);
@@ -930,8 +1019,11 @@ app.post("/api/coauthor/runs", async (req, res) => {
         previousChapter: asText(rawInput.previousChapter),
         worldBible: asText(rawInput.worldBible),
         bookPlan: asText(rawInput.bookPlan),
+        codexContext: asText(rawInput.codexContext, 6_000),
+        codexHits: asCodexHits(rawInput.codexHits),
         authorSample: asText(rawInput.authorSample),
         voiceSheet: rawInput.voiceSheet,
+        authorRules: asAuthorRules(rawInput.authorRules),
         styleProfile: rawInput.styleProfile && typeof rawInput.styleProfile === "object" ? rawInput.styleProfile : undefined,
         customPrompt: asText(rawInput.customPrompt, 4_000),
       },
@@ -977,6 +1069,7 @@ app.post("/api/coauthor/runs", async (req, res) => {
           customPrompt: run.context.input.customPrompt,
           authorSample: run.context.input.authorSample,
           voiceSheet: run.context.input.voiceSheet,
+          authorRules: run.context.input.authorRules,
           baseText: run.context.input.baseText,
         },
       };
@@ -1153,6 +1246,7 @@ app.post("/api/agent/start", async (req, res) => {
         bookPlan: asText(body.input?.bookPlan),
         authorSample: asText(body.input?.authorSample),
         voiceSheet: body.input?.voiceSheet,
+        authorRules: asAuthorRules(body.input?.authorRules),
       },
       options: { humanizeDepth: config.humanizeDepth, model },
     });

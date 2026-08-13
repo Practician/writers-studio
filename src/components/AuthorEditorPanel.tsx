@@ -20,6 +20,7 @@ import {
   AuthorProfileRecord,
   AuthorRevisionRecord,
   AuthorVoiceSheet,
+  AuthorRules,
   Chapter,
   Story,
   TextSelection,
@@ -38,6 +39,7 @@ import {
 } from "../lib/adaptiveDetector";
 import { YANDEX_LOCAL_GAP } from "../../server/humanStyle";
 import { diffParagraphs } from "../lib/textDiff";
+import LanguageToolPanel from "./LanguageToolPanel";
 import {
   listAuthorRevisions,
   deleteAuthorProfile,
@@ -128,6 +130,9 @@ export default function AuthorEditorPanel({
   const [styleDescription, setStyleDescription] = useState("");
   const [protectedTermsText, setProtectedTermsText] = useState("");
   const [voiceSheet, setVoiceSheet] = useState<AuthorVoiceSheet | undefined>();
+  const [mustRulesText, setMustRulesText] = useState("");
+  const [avoidRulesText, setAvoidRulesText] = useState("");
+  const [preferenceRulesText, setPreferenceRulesText] = useState("");
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileStatus, setProfileStatus] = useState("");
   const [scope, setScope] = useState<Scope>(selection ? "selection" : "chapter");
@@ -153,6 +158,9 @@ export default function AuthorEditorPanel({
     setStyleDescription("");
     setProtectedTermsText("");
     setVoiceSheet(undefined);
+    setMustRulesText("");
+    setAvoidRulesText("");
+    setPreferenceRulesText("");
     loadAuthorProfile(story.id)
       .then((profile) => {
         if (cancelled || !profile) return;
@@ -161,6 +169,9 @@ export default function AuthorEditorPanel({
         setStyleDescription(profile.styleDescription);
         setProtectedTermsText(profile.protectedTerms.join(", "));
         setVoiceSheet(profile.voiceSheet);
+        setMustRulesText(profile.authorRules?.must.join("\n") || "");
+        setAvoidRulesText(profile.authorRules?.avoid.join("\n") || "");
+        setPreferenceRulesText(profile.authorRules?.preferences.join("\n") || "");
       })
       .catch(() => {
         if (!cancelled) setProfileStatus("Локальный профиль пока недоступен");
@@ -245,6 +256,7 @@ export default function AuthorEditorPanel({
       sampleFileName?: string;
       styleDescription?: string;
       protectedTerms?: string[];
+      authorRules?: AuthorRules;
     },
   ) => {
     const profile: AuthorProfileRecord = {
@@ -254,6 +266,11 @@ export default function AuthorEditorPanel({
       styleDescription: options?.styleDescription ?? styleDescription,
       protectedTerms: options?.protectedTerms ?? parseTerms(protectedTermsText),
       voiceSheet: options?.clearVoiceSheet ? undefined : (options?.voiceSheet ?? voiceSheet),
+      authorRules: options?.authorRules ?? {
+        must: parseTerms(mustRulesText),
+        avoid: parseTerms(avoidRulesText),
+        preferences: parseTerms(preferenceRulesText),
+      },
       updatedAt: Date.now(),
     };
     await saveAuthorProfile(profile);
@@ -303,6 +320,9 @@ export default function AuthorEditorPanel({
     setStyleDescription("");
     setProtectedTermsText("");
     setVoiceSheet(undefined);
+    setMustRulesText("");
+    setAvoidRulesText("");
+    setPreferenceRulesText("");
     setProfileStatus("Образец и паспорт голоса удалены");
   };
 
@@ -414,6 +434,11 @@ export default function AuthorEditorPanel({
           styleDescription,
           voiceSheet,
           protectedTerms: parseTerms(protectedTermsText),
+          authorRules: {
+            must: parseTerms(mustRulesText),
+            avoid: parseTerms(avoidRulesText),
+            preferences: parseTerms(preferenceRulesText),
+          },
           strength,
           instructions,
           adaptiveStyleGuidance: buildAdaptiveWritingGuidance(adaptiveProfile),
@@ -560,6 +585,11 @@ export default function AuthorEditorPanel({
           placeholder="Защищённые имена, предметы и термины — через запятую"
           className="w-full rounded-lg border border-slate-800 bg-slate-950 p-2 text-xs text-slate-200 outline-none"
         />
+        <div className="grid grid-cols-1 gap-2">
+          <textarea value={mustRulesText} onChange={(event) => setMustRulesText(event.target.value)} rows={2} placeholder="Обязательно: по одному правилу в строке" className="w-full rounded-lg border border-slate-800 bg-slate-950 p-2 text-xs text-slate-200 outline-none" />
+          <textarea value={avoidRulesText} onChange={(event) => setAvoidRulesText(event.target.value)} rows={2} placeholder="Не использовать: слова, приёмы и запреты — по одному в строке" className="w-full rounded-lg border border-slate-800 bg-slate-950 p-2 text-xs text-slate-200 outline-none" />
+          <textarea value={preferenceRulesText} onChange={(event) => setPreferenceRulesText(event.target.value)} rows={2} placeholder="Предпочтительно: мягкие стилистические решения — по одному в строке" className="w-full rounded-lg border border-slate-800 bg-slate-950 p-2 text-xs text-slate-200 outline-none" />
+        </div>
         <div className="flex gap-2">
           <button
             id="build-author-profile-btn"
@@ -760,6 +790,8 @@ export default function AuthorEditorPanel({
           </div>
         )) : <p className="text-[10px] text-slate-500">Явных поверхностных сигналов не найдено. Это не сертификат авторства.</p>}
       </div>
+
+      <LanguageToolPanel text={sourceText} chapterTitle={activeChapter?.title} />
 
       <div className="space-y-2">
         <div className="grid grid-cols-3 gap-1 text-[10px]">

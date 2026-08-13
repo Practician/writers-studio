@@ -113,3 +113,67 @@ test("author voice mode rejects a missing passport instead of silently falling b
 
   await assert.rejects(() => executeCoauthorRun(store, run, async () => "не должен вызываться"), /Авторский режим требует/);
 });
+
+
+test("dispatcher records an explainable context manifest before generating", async () => {
+  const storePath = tempStorePath("context-manifest");
+  const store = new CoauthorRunStore(storePath);
+  const run = createCoauthorRun(request({
+    input: {
+      baseText: "Он закрыл дверь и прислушался.",
+      selectedText: "закрыл дверь",
+      title: "Лабиринт",
+      genre: "психологический триллер",
+      chapterTitle: "Глава 1",
+      chapterSummary: "Герой замечает первый сбой.",
+      previousChapter: "Предыдущая сцена заканчивается тревожным звонком.",
+      worldBible: "Лабиринт меняет правила после полуночи.",
+      bookPlan: "Первый акт: герой принимает ложное объяснение.",
+    },
+  }));
+  store.create(run);
+
+  const completed = await executeCoauthorRun(store, run, async (_system, prompt) => {
+    assert.match(prompt, /Библия мира/);
+    assert.match(prompt, /План книги/);
+    return "Он прикрыл дверь и замер.";
+  });
+
+  const manifest = completed.context.contextManifest;
+  assert.ok(manifest.length >= 6);
+  assert.equal(manifest.every((item) => item.status === "included" && item.reason.length > 0), true);
+  assert.ok(manifest.some((item) => item.sourceType === "world_bible"));
+  assert.ok(manifest.some((item) => item.sourceType === "book_plan"));
+  assert.ok(manifest.every((item) => item.tokenEstimate > 0));
+
+  const restored = new CoauthorRunStore(storePath).get(completed.id);
+  assert.equal(restored?.context.contextManifest.length, manifest.length);
+});
+
+
+test("coauthor injects explicit author rules and exposes them in the manifest", async () => {
+  const store = new CoauthorRunStore(tempStorePath("author-rules"));
+  const run = createCoauthorRun(request({
+    input: {
+      baseText: "Он закрыл дверь и прислушался.",
+      selectedText: "закрыл дверь",
+      chapterTitle: "Глава 1",
+      authorRules: {
+        must: ["Сохраняй близкий POV"],
+        avoid: ["Не использовать слово «вдруг»"],
+        preferences: ["Опирайся на действие вместо объяснения эмоции"],
+      },
+    },
+  }));
+  store.create(run);
+
+  const completed = await executeCoauthorRun(store, run, async (_system, prompt) => {
+    assert.match(prompt, /ЯВНЫЕ ПРАВИЛА АВТОРА/);
+    assert.match(prompt, /НЕ ИСПОЛЬЗОВАТЬ: Не использовать слово «вдруг»/);
+    return "Он прикрыл дверь и прислушался.";
+  });
+
+  const rules = completed.context.contextManifest.find((item) => item.sourceType === "author_rule");
+  assert.equal(rules?.relevance, "required");
+  assert.match(rules?.reason || "", /приоритет/);
+});

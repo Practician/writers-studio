@@ -3,7 +3,7 @@
 // Расширяет AuthorVoiceSheet количественными метриками и few-shot примерами.
 
 import { Type } from "@google/genai";
-import type { AuthorVoiceSheet } from "../../src/types";
+import { AuthorRules, AuthorVoiceSheet } from "../../src/types";
 import { aiTellScore, sentenceBurstiness, detectAiTells } from "../humanStyle";
 import { parseJsonResponse, selectStyleExcerpts, voiceSheetSchema, buildProfilePrompt } from "../authorPipeline";
 import { llmGenerate, llmTextOrThrow } from "../llmProvider";
@@ -300,7 +300,7 @@ export async function mergeProfiles(existing: DeepStyleProfile, newSample: strin
 /**
  * Генерирует текстовый блок инструкций для LLM на основе глубокого профиля
  */
-export function buildStyleInstructionBlock(profile: DeepStyleProfile): string {
+export function buildStyleInstructionBlock(profile: DeepStyleProfile, authorRules?: AuthorRules): string {
   const lines: string[] = [];
 
   lines.push("=== ПАСПОРТ АВТОРСКОГО СТИЛЯ ===\n");
@@ -320,7 +320,13 @@ export function buildStyleInstructionBlock(profile: DeepStyleProfile): string {
       lines.push(`  * ${item}`);
     }
   }
-  lines.push("");
+  if (authorRules && (authorRules.must.length || authorRules.avoid.length || authorRules.preferences.length)) {
+    lines.push("[ЯВНЫЕ ПРАВИЛА АВТОРА — ПРИОРИТЕТ ВЫШЕ СТАТИСТИКИ]");
+    for (const rule of authorRules.must) lines.push(`- ОБЯЗАТЕЛЬНО: ${rule}`);
+    for (const rule of authorRules.avoid) lines.push(`- НЕ ИСПОЛЬЗОВАТЬ: ${rule}`);
+    for (const rule of authorRules.preferences) lines.push(`- ПРЕДПОЧТИТЕЛЬНО: ${rule}`);
+    lines.push("");
+  }
 
   // Количественные метрики
   lines.push("[КОЛИЧЕСТВЕННЫЕ ЦЕЛЕВЫЕ ПОКАЗАТЕЛИ]");
@@ -365,7 +371,7 @@ export function buildStyleInstructionBlock(profile: DeepStyleProfile): string {
     lines.push(`(Суть: ${ex.annotation})\n`);
   });
 
-  lines.push("ИНСТРУКЦИЯ: При генерации текста строго придерживайся этих метрик, паттернов и правил. Твоя задача — создать текст, который статистически и стилистически будет неотличим от представленного авторского профиля.");
+  lines.push("ИНСТРУКЦИЯ: Используй паспорт как направляющую для ритма, интонации и конкретности. Явные правила автора важнее статистических метрик. Не заявляй, что определил авторство, и не имитируй ошибки ради числового сходства.");
 
   return lines.join("\n");
 }

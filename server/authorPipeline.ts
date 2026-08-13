@@ -1,5 +1,5 @@
 import { Type } from "@google/genai";
-import type { AuthorVoiceSheet } from "../src/types";
+import type { AuthorRules, AuthorVoiceSheet } from "../src/types";
 import { AI_TELL_CATALOG, quantitativeVoiceBlock } from "./humanStyle";
 
 export const DEFAULT_AUTHOR_MODEL = "gemini-3.5-flash";
@@ -31,6 +31,7 @@ export interface AuthorRewriteRequest {
   styleDescription: string;
   voiceSheet?: AuthorVoiceSheet;
   protectedTerms: string[];
+  authorRules: AuthorRules;
   strength: "conservative" | "balanced" | "deep";
   instructions: string;
   adaptiveStyleGuidance: string;
@@ -93,6 +94,17 @@ export function validateProfileRequest(value: unknown): AuthorProfileRequest {
   };
 }
 
+export function normalizeAuthorRules(value: unknown): AuthorRules {
+  const empty: AuthorRules = { must: [], avoid: [], preferences: [] };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return empty;
+  const raw = value as Record<string, unknown>;
+  return {
+    must: normalizeProtectedTerms(raw.must).slice(0, 30),
+    avoid: normalizeProtectedTerms(raw.avoid).slice(0, 30),
+    preferences: normalizeProtectedTerms(raw.preferences).slice(0, 30),
+  };
+}
+
 export function validateRewriteRequest(value: unknown): AuthorRewriteRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Тело запроса должно быть объектом");
   const body = value as Record<string, unknown>;
@@ -108,6 +120,7 @@ export function validateRewriteRequest(value: unknown): AuthorRewriteRequest {
     styleDescription: optionalString(body.styleDescription, "styleDescription", 5_000),
     voiceSheet,
     protectedTerms: normalizeProtectedTerms(body.protectedTerms),
+    authorRules: normalizeAuthorRules(body.authorRules),
     strength,
     instructions: optionalString(body.instructions, "instructions", 5_000),
     adaptiveStyleGuidance: optionalString(body.adaptiveStyleGuidance, "adaptiveStyleGuidance", 4_000),
@@ -284,6 +297,7 @@ export function buildAnalysisPrompt(request: AuthorRewriteRequest): string {
   return `${DATA_WARNING}\n\n<DATA role="source">\n${request.sourceText}\n</DATA>\n\n` +
     `<DATA role="book-context">\n${JSON.stringify(request.context)}\n</DATA>\n\n` +
     `<DATA role="protected-terms">\n${JSON.stringify(request.protectedTerms)}\n</DATA>\n\n` +
+    `<DATA role="author-rules">\n${JSON.stringify(request.authorRules)}\n</DATA>\n\n` +
     "Составь неизменяемую карту фактов исходного фрагмента и короткий пакет текущей главы. " +
     "Не оценивай стиль, не добавляй события и не превращай предположения в канон. Зафиксируй порядок действий, предметы, числа, направления, знания героя и причинные связи.";
 }
@@ -306,7 +320,8 @@ export function buildRewritePrompt(
     `<DATA role="facts-and-canon">\n${JSON.stringify(analysis)}\n</DATA>\n\n` +
     `<DATA role="source-blocks">\n${JSON.stringify(structure.blocks)}\n</DATA>\n\n` +
     `<DATA role="author-instructions">\n${request.instructions}\n</DATA>\n\n` +
-    `${strength} Верни ровно ${structure.blocks.length} блоков в том же порядке. ` +
+    `<DATA role="author-rules">\n${JSON.stringify(request.authorRules)}\n</DATA>\n\n` +
+    `Явные правила автора важнее статистического сходства. ${strength} Верни ровно ${structure.blocks.length} блоков в том же порядке. ` +
     "Не объединяй и не дроби блоки. Не добавляй заголовки, метатекст, новые числа, сравнения, предметы или свойства мира. " +
     "Не копируй события из образца автора. Не добавляй искусственные ошибки, разговорные частицы или восклицания только ради статистики.";
 }
@@ -327,7 +342,8 @@ export function buildTargetedRewritePrompt(
     `<DATA role="facts-and-canon">\n${JSON.stringify(analysis)}\n</DATA>\n\n` +
     `<DATA role="priority-blocks">\n${JSON.stringify(targets)}\n</DATA>\n\n` +
     `<DATA role="author-instructions">\n${request.instructions}\n</DATA>\n\n` +
-    `Верни ровно ${indexes.length} переработанных текстов в том же порядке, что priority-blocks. ` +
+    `<DATA role="author-rules">\n${JSON.stringify(request.authorRules)}\n</DATA>\n\n` +
+    `Явные правила автора важнее статистического сходства. Верни ровно ${indexes.length} переработанных текстов в том же порядке, что priority-blocks. ` +
     "Каждый текст действительно переработай по паспорту голоса: выражения из matchedFormulas не должны сохраниться дословно. Замени их конкретным восприятием, действием или прямой мыслью героя, если это подтверждено исходным абзацем. " +
     "Не ограничивайся орфографией, заменой е/ё, дефисов и тире. Не добивайся лаконичности простым удалением: сохрани каждую конкретную деталь, внутреннюю реакцию, объект, свойство и возможный исход из оригинала. Сохрани все события, числа, причинные связи, точку зрения и порядок действий. " +
     "Не добавляй факты, сравнения, разговорные частицы или ошибки и не используй текст образца как источник событий.";
@@ -339,6 +355,7 @@ export function buildAuditPrompt(request: AuthorRewriteRequest, original: string
     `<DATA role="voice-sheet">\n${JSON.stringify(voiceSheet)}\n</DATA>\n\n` +
     `<DATA role="facts-and-canon">\n${JSON.stringify(analysis)}\n</DATA>\n\n` +
     `<DATA role="protected-terms">\n${JSON.stringify(request.protectedTerms)}\n</DATA>\n\n` +
+    `<DATA role="author-rules">\n${JSON.stringify(request.authorRules)}\n</DATA>\n\n` +
     "Проведи только проверку, ничего не переписывай. Найди потерянные или добавленные факты, изменения порядка действий, новые числа, метатекст, нарушения канона, механическое копирование поверхностных привычек и неестественный русский язык. " +
     "passed=true допустимо только при отсутствии блокирующих смысловых изменений.";
 }

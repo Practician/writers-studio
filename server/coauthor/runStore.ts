@@ -8,6 +8,7 @@ import type {
   CoauthorPlanStep,
   CoauthorRun,
   CoauthorRunStatus,
+  ContextManifestItem,
   QualityReport,
 } from "../../src/lib/coauthorContracts";
 
@@ -84,6 +85,15 @@ export class CoauthorRunStore {
     return run;
   }
 
+  setContextManifest(runId: string, manifest: ContextManifestItem[]): CoauthorRun | undefined {
+    const run = this.runs.get(runId);
+    if (!run) return undefined;
+    run.context.contextManifest = manifest;
+    run.updatedAt = new Date().toISOString();
+    this.persist();
+    return run;
+  }
+
   complete(runId: string, output: string, quality?: QualityReport, changeset?: Changeset): CoauthorRun | undefined {
     const run = this.runs.get(runId);
     if (!run) return undefined;
@@ -136,7 +146,11 @@ export class CoauthorRunStore {
       if (!fs.existsSync(this.filePath)) return;
       const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as RunStoreFile;
       if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.runs)) return;
-      for (const run of parsed.runs) this.runs.set(run.id, run);
+      for (const run of parsed.runs) {
+        // Старые записи были созданы до Context Manifest; дополняем их при чтении.
+        if (!Array.isArray(run.context?.contextManifest)) run.context.contextManifest = [];
+        this.runs.set(run.id, run);
+      }
     } catch (error) {
       console.warn("Coauthor run store could not be loaded:", error);
     }

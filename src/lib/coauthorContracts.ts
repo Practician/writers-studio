@@ -1,4 +1,5 @@
 import { hashText } from "./authorAudit";
+import type { AuthorRules } from "../types";
 import {
   assessAiTellRisk,
   type AiTellRiskAssessment,
@@ -28,6 +29,14 @@ export interface CoauthorTarget {
   selection?: TextRange;
 }
 
+export interface CoauthorCodexHit {
+  entryId: string;
+  label: string;
+  excerpt: string;
+  reason: string;
+  score: number;
+}
+
 export interface CoauthorRunInput {
   title?: string;
   genre?: string;
@@ -39,8 +48,11 @@ export interface CoauthorRunInput {
   previousChapter?: string;
   worldBible?: string;
   bookPlan?: string;
+  codexContext?: string;
+  codexHits?: CoauthorCodexHit[];
   authorSample?: string;
   voiceSheet?: unknown;
+  authorRules?: AuthorRules;
   /** Версионируемый глубокий профиль: метрики, паттерны и эталоны автора. */
   styleProfile?: unknown;
   customPrompt?: string;
@@ -63,12 +75,40 @@ export interface CoauthorRunRequest {
   };
 }
 
+export type ContextManifestItemSource =
+  | "story"
+  | "chapter"
+  | "previous_chapter"
+  | "world_bible"
+  | "book_plan"
+  | "author_voice"
+  | "author_rule"
+  | "codex"
+  | "scene"
+  | "semantic_retrieval";
+
+export interface ContextManifestItem {
+  id: string;
+  sourceType: ContextManifestItemSource;
+  sourceId?: string;
+  revisionId?: string;
+  label: string;
+  reason: string;
+  relevance: "required" | "supporting" | "optional";
+  inclusionPolicy: "always" | "detected" | "manual" | "never";
+  tokenEstimate: number;
+  excerpt: string;
+  status: "included" | "excluded";
+}
+
 export interface StoryContextSnapshot {
   storyId: string;
   chapterId?: string;
   baseRevision: string;
   capturedAt: string;
   input: CoauthorRunInput;
+  /** Объяснимый список источников, собранных для конкретного запуска. */
+  contextManifest: ContextManifestItem[];
 }
 
 export type CoauthorRunStatus =
@@ -181,6 +221,7 @@ export function createContextSnapshot(request: CoauthorRunRequest): StoryContext
     baseRevision: request.target.baseRevision,
     capturedAt: new Date().toISOString(),
     input: request.input,
+    contextManifest: [],
   };
 }
 
