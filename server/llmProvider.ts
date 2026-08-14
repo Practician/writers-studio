@@ -646,18 +646,38 @@ export function extractGeminiRetryDelaySeconds(error: unknown): number | null {
   return null;
 }
 
-export function isDailyQuotaExhausted(error: unknown): boolean {
+export type GeminiRateLimitKind = "transient" | "daily" | "project";
+
+/**
+ * Классифицирует 429 Gemini по данным, которые фактически вернул Google.
+ * Общее «check your plan and billing details» не доказывает, что исчерпаны
+ * запросы конкретного ключа: лимиты Gemini применяются к Google-проекту.
+ */
+export function classifyGeminiRateLimit(error: unknown): GeminiRateLimitKind {
   const retryDelay = extractGeminiRetryDelaySeconds(error);
-  // Если retryDelay присутствует и < 600 секунд → это RPM-лимит, НЕ дневная квота
-  if (retryDelay !== null) return retryDelay >= 600;
+  if (retryDelay !== null) return retryDelay >= 600 ? "daily" : "transient";
 
   const message = String((error as any)?.message ?? error ?? "");
-  if (/exceeded.*quota|quota.*exceeded|billing.*details|out of.*credits/i.test(message)) {
-    return true;
+  const body = String((error as any)?.body ?? "");
+  const details = `${message}\n${body}`;
+
+  // quotaId в QuotaFailure содержит PerDay для подтверждённой RPD-квоты.
+  if (/GenerateRequestsPerDay|RequestsPerDay|PerDay|requests?\s+per\s+day/i.test(details)
+    && !/PerMinute|requests?\s+per\s+minute|tokens?\s+per\s+minute|RPM|TPM/i.test(details)) {
+    return "daily";
   }
-  
-  // Fallback: если retryDelay неизвестен — смотрим только на PerDay без PerMinute
-  return message.includes("GenerateRequestsPerDay") && !message.includes("PerMinute");
+  if (/PerMinute|requests?\s+per\s+minute|tokens?\s+per\s+minute|RPM|TPM|retry in\s+[\d.]+s/i.test(details)) {
+    return "transient";
+  }
+
+  // Неизвестная 429 о plan/billing/quota — ограничение проекта или биллинга,
+  // а не доказанная дневная квота одного ключа.
+  return "project";
+}
+
+/** @deprecated Для новой логики используйте classifyGeminiRateLimit(). */
+export function isDailyQuotaExhausted(error: unknown): boolean {
+  return classifyGeminiRateLimit(error) === "daily";
 }
 
 export function isGroqModelName(model: string): boolean {
@@ -1350,6 +1370,7 @@ async function generateViaGemini(params: LlmGenerateParams): Promise<LlmGenerate
   const models = geminiModelChain(params.model);
   let lastError: any = null;
   let attempts = 0;
+  let projectQuotaFailures = 0;
 
   for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
     const model = models[modelIndex];
@@ -1378,25 +1399,36 @@ async function generateViaGemini(params: LlmGenerateParams): Promise<LlmGenerate
         const message = String(error?.message ?? "");
 
         if (status === 429) {
-          if (isDailyQuotaExhausted(error)) {
-            console.warn(`Gemini key #${keyIndex + 1} daily quota exhausted → key cooldown 1h`);
-            markKeyCooldown(key, 3_600_000, "gemini-daily-quota");
+          const limitKind = classifyGeminiRateLimit(error);
+          if (limitKind === "daily") {
+            const retryDelaySec = extractGeminiRetryDelaySeconds(error);
+            // При подтверждённой RPD используем срок, который вернул Google.
+            // Без RetryInfo сохраняем консервативное охлаждение на один час.
+            const delayMs = retryDelaySec !== null
+              ? Math.min(Math.max(Math.ceil(retryDelaySec * 1000) + 1000, 60_000), 86_400_000)
+              : 3_600_000;
+            llmLog("warn", `Gemini key #${keyIndex + 1}: подтверждён дневной лимит → cooldown ${Math.round(delayMs / 60_000)} мин`, "gemini");
+            markKeyCooldown(key, delayMs, "gemini-daily-quota");
             continue;
-          } else {
-            let delayMs = 20000;
+          }
+
+          if (limitKind === "transient") {
             const parsedDelay = extractGeminiRetryDelaySeconds(error);
-            if (parsedDelay !== null) {
-              delayMs = parsedDelay * 1000 + 1000;
-            } else {
-              const match = message.match(/retry in ([\d\.]+)s/i);
-              if (match && match[1]) {
-                delayMs = Math.ceil(parseFloat(match[1]) * 1000) + 1000;
-              }
-            }
-            console.warn(`Gemini key #${keyIndex + 1} RPM limit. Охлаждаем ключ на ${Math.round(delayMs/1000)}с и идём дальше...`);
+            const delayMs = parsedDelay !== null
+              ? Math.min(Math.max(Math.ceil(parsedDelay * 1000) + 1000, 1_000), 300_000)
+              : 20_000;
+            llmLog("warn", `Gemini key #${keyIndex + 1}: кратковременный RPM/TPM-лимит → cooldown ${Math.round(delayMs / 1000)}с`, "gemini");
             markKeyCooldown(key, delayMs, "gemini-rpm-limit");
             continue;
           }
+
+          // Общая 429 о plan/billing — лимит Google-проекта или его биллинга,
+          // не доказанная дневная квота ключа. Следующий ключ проверяется один
+          // раз: он может принадлежать другому проекту, но не блокируется на час.
+          projectQuotaFailures += 1;
+          llmLog("warn", `Gemini key #${keyIndex + 1}: ограничение проекта/биллинга; проверяю следующий ключ без часового cooldown`, "gemini");
+          markKeyCooldown(key, 60_000, "gemini-project-quota");
+          continue;
         }
 
         if (status === 401 || status === 403) {
@@ -1422,6 +1454,13 @@ async function generateViaGemini(params: LlmGenerateParams): Promise<LlmGenerate
     }
   }
 
+  if (projectQuotaFailures >= keys.length && keys.length > 0) {
+    const projectError = new Error(
+      "Gemini отклонил все ключи по квоте или биллингу Google-проекта. Лимиты Gemini применяются к проекту, а не к API-ключу: ключи одного проекта не дают отдельные 1 500 запросов. Проверьте активные лимиты и биллинг проекта в Google AI Studio.",
+    );
+    (projectError as any).status = 429;
+    throw projectError;
+  }
   throw lastError || new Error("Gemini: все модели и ключи недоступны");
 }
 

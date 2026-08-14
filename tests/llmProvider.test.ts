@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  classifyGeminiRateLimit,
+  extractGeminiRetryDelaySeconds,
   isNvidiaAccountFunctionNotFound,
   isNvidiaModelFailoverError,
   isNvidiaModelName,
@@ -132,6 +134,41 @@ test("auto mode stops immediately when every configured key is on cooldown", asy
       /в cooldown|квоты|лимита/i,
     );
   });
+});
+
+test("Gemini classifies generic billing 429 as project limit, not per-key daily quota", () => {
+  const error = Object.assign(
+    new Error("You exceeded your current quota, please check your plan and billing details."),
+    { status: 429 },
+  );
+  assert.equal(classifyGeminiRateLimit(error), "project");
+});
+
+test("Gemini recognises a confirmed PerDay quota and Google retry delay", () => {
+  const body = JSON.stringify({
+    error: {
+      details: [
+        { "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations: [{ quotaId: "GenerateRequestsPerDay" }] },
+        { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "86400s" },
+      ],
+    },
+  });
+  const error = Object.assign(new Error(body), { status: 429, body });
+  assert.equal(extractGeminiRetryDelaySeconds(error), 86_400);
+  assert.equal(classifyGeminiRateLimit(error), "daily");
+});
+
+test("Gemini recognises short retry delay as transient RPM or TPM limit", () => {
+  const body = JSON.stringify({
+    error: {
+      details: [
+        { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "18s" },
+      ],
+    },
+  });
+  const error = Object.assign(new Error(body), { status: 429, body });
+  assert.equal(extractGeminiRetryDelaySeconds(error), 18);
+  assert.equal(classifyGeminiRateLimit(error), "transient");
 });
 
 test("NVIDIA account-function 404 is identified as provider-level failure", () => {
