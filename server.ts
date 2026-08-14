@@ -45,6 +45,7 @@ import {
 } from "./server/chapterGenerate";
 import microEditRouter from "./server/api/microEdit";
 import { CoauthorRunStore } from "./server/coauthor/runStore";
+import { isChapterGenerationAction } from "./server/writerActions";
 import { buildCoauthorPrompt, executeCoauthorRun } from "./server/coauthor/dispatcher";
 import {
   getLlmStatus,
@@ -559,7 +560,7 @@ ${customPrompt}
 3. Оформить текст красивой Markdown разметкой с понятными заголовками и маркированными списками.
 4. Выдайте ТОЛЬКО текст Библии мира. Не пишите никаких вступлений ("Вот ваша Библия мира:") или комментариев после текста. Начните сразу с текста самой Библии мира.`;
 
-    } else if (action === "generate_full_chapter") {
+    } else if (isChapterGenerationAction(action)) {
       systemInstruction = "Вы — незаметный соавтор продолжения рукописи. Ваша задача — написать следующую страницу так, чтобы она звучала как тот же автор, а не демонстрировать литературное мастерство. Простота, конкретность и привычки исходного голоса важнее гладкости и декоративности.";
       
       prompt = `Напиши целую полноценную главу для книги на основе предоставленных материалов.
@@ -770,7 +771,7 @@ ${text || ""}
     }
 
     // Полная глава с humanize: сцены + best-of-N + multi-pass (см. chapterGenerate.ts).
-    if ((action === "generate_full_chapter" || isFinalDraftAction) && humanizeEnabled) {
+    if (isChapterGenerationAction(action) && humanizeEnabled) {
       const generated = await generateHumanizedChapter({
         title: String(title || ""),
         genre: String(genre || ""),
