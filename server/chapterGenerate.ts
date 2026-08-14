@@ -19,6 +19,7 @@ import {
   humanizeGatePassed,
   pickBestChapterCandidate,
   pickBestVariant,
+  rankChapterCandidate,
   positiveVoiceFewShots,
   quantitativeVoiceBlock,
   repeatedNgramShare,
@@ -357,11 +358,41 @@ ${styleExtras}
 export function buildChapterSystemInstruction(personaBlock: string, statsBlock: string): string {
   return [
     "Вы — незаметный соавтор продолжения рукописи на русском языке. Простота, конкретность и привычки исходного голоса важнее гладкости.",
-    "ЯЗЫК: пиши только по-русски. Запрещены английские слова, латиница и смешение языков. Цифры допустимы.",
-    humanStyleDirectives(),
+    "ПРИОРИТЕТ №1 — ПАСПОРТ АВТОРА: если конкретная привычка голоса автора расходится с общей литературной рекомендацией, следуй паспорту. Не усредняй манеру до нейтральной «качественной прозы».",
     personaBlock,
     statsBlock,
+    "ЯЗЫК: пиши только по-русски. Запрещены английские слова, латиница и смешение языков. Цифры допустимы.",
+    "ОБЩИЕ ПРОВЕРКИ РЕМЕСЛА — вторичны по отношению к паспорту и канону; они не дают права переписывать голос автора:",
+    humanStyleDirectives(),
   ].filter(Boolean).join("\n\n");
+}
+
+const PASSPORT_VOICE_TOLERANCE = 0.035;
+
+/**
+ * При наличии образца голос автора — первичный критерий выбора полного черновика.
+ * Локальный craft-score выбирает только между вариантами, практически равными
+ * по стилевому сходству, поэтому гладкая нейтральная проза не выигрывает у
+ * узнаваемой авторской манеры лишь из-за формальной метрики.
+ */
+export function pickPassportAlignedChapterCandidate<T extends {
+  text: string;
+  score: AiTellScore;
+  voiceSimilarity?: number;
+}>(candidates: T[], scoreGate = 12, minBurstiness = 0.45): T {
+  if (!candidates.length) throw new Error("Нет кандидатов главы");
+  const voiced = candidates.filter((candidate) => Number.isFinite(candidate.voiceSimilarity));
+  if (!voiced.length) return pickBestChapterCandidate(candidates, scoreGate, minBurstiness);
+
+  const highestVoice = Math.max(...voiced.map((candidate) => candidate.voiceSimilarity ?? 0));
+  const passportAligned = voiced.filter(
+    (candidate) => (candidate.voiceSimilarity ?? 0) >= highestVoice - PASSPORT_VOICE_TOLERANCE,
+  );
+  return passportAligned.reduce((best, candidate) =>
+    rankChapterCandidate(candidate.score, scoreGate, minBurstiness) < rankChapterCandidate(best.score, scoreGate, minBurstiness)
+      ? candidate
+      : best,
+  );
 }
 
 const PRIORITY_HIT_IDS = new Set([
@@ -963,15 +994,11 @@ export async function generateHumanizedChapter(
     }
   }
 
-  const lowRiskWinner = pickBestChapterCandidate(rawCandidates, depth.scoreGate, depth.minBurstiness);
-  // Голос автора — первичный критерий среди практически равноценных по локальному риску
-  // вариантов. Нельзя позволить высокому AI-risk выиграть только за счёт ритма.
-  const eligibleForVoice = sample.length >= 300
-    ? rawCandidates.filter((candidate) => candidate.score.score <= lowRiskWinner.score.score + 8)
-    : [];
-  const chosen = eligibleForVoice.length
-    ? eligibleForVoice.reduce((best, candidate) => (candidate.voiceSimilarity ?? 0) > (best.voiceSimilarity ?? 0) ? candidate : best)
-    : lowRiskWinner;
+  // При паспорте авторская манера выбирается первой; локальный craft-score
+  // разрешает спор только между почти одинаково близкими к голосу вариантами.
+  const chosen = sample.length >= 300
+    ? pickPassportAlignedChapterCandidate(rawCandidates, depth.scoreGate, depth.minBurstiness)
+    : pickBestChapterCandidate(rawCandidates, depth.scoreGate, depth.minBurstiness);
   console.warn(`Chose chapter candidate #${chosen.index + 1} (risk=${chosen.score.score}, voice=${chosen.voiceSimilarity ?? "n/a"})`);
 
   const before = chosen.score;

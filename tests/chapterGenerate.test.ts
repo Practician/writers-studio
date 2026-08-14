@@ -5,7 +5,9 @@ import {
   fallbackBeatsFromSynopsis,
   buildCompletedBeatsLedger,
   buildScenePrompt,
+  buildChapterSystemInstruction,
   buildPersonaAndStyle,
+  pickPassportAlignedChapterCandidate,
   humanizeProseDraft,
   rewriteDetectorAiSegments,
   runTouchupPipeline,
@@ -150,6 +152,26 @@ test("humanizeProseDraft report includes gate fields", async () => {
   assert.equal(result.humanizeReport.depth, "fast");
   assert.equal(result.humanizeReport.mode, "single");
   assert.ok(result.humanizeReport.scoreAfter <= 20);
+});
+
+test("passport-aligned selection gives author voice priority before craft score", () => {
+  const genericButClean = {
+    text: "generic",
+    score: aiTellScore("Я открыл дверь, посмотрел в коридор и пошёл дальше."),
+    voiceSimilarity: 0.31,
+    index: 0,
+  };
+  const authorLike = {
+    text: "author-like",
+    score: aiTellScore("Волна ужаса накрыла его, и время словно остановилось."),
+    voiceSimilarity: 0.81,
+    index: 1,
+  };
+  const chosen = pickPassportAlignedChapterCandidate([genericButClean, authorLike], 12, 0.45);
+  assert.equal(chosen.index, 1);
+
+  const system = buildChapterSystemInstruction("ПАСПОРТ: короткие бытовые наблюдения.", "");
+  assert.ok(system.indexOf("ПАСПОРТ: короткие бытовые наблюдения.") < system.indexOf("ОБЩИЕ ПРОВЕРКИ РЕМЕСЛА"));
 });
 
 test("pickBestChapterCandidate prefers lower AI-tell and higher burstiness", () => {
