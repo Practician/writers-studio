@@ -7,10 +7,20 @@ import {
 } from "../src/lib/coauthorQuality";
 import {
   applyChangeset,
+  coauthorIntentRequiresSourceText,
   createAppendChangeset,
   qualityReportFromAiTell,
   revisionOf,
 } from "../src/lib/coauthorContracts";
+
+test("continue can start an empty chapter while text transformations require source", () => {
+  assert.equal(coauthorIntentRequiresSourceText("continue"), false);
+  assert.equal(coauthorIntentRequiresSourceText("plan"), false);
+  assert.equal(coauthorIntentRequiresSourceText("brainstorm"), false);
+  assert.equal(coauthorIntentRequiresSourceText("improve"), true);
+  assert.equal(coauthorIntentRequiresSourceText("rewrite"), true);
+  assert.equal(coauthorIntentRequiresSourceText("audit"), true);
+});
 
 test("AI-tell risk uses a maximum threshold: lower is better", () => {
   assert.equal(normalizeMaxAiTellScore(undefined), DEFAULT_MAX_AI_TELL_SCORE);

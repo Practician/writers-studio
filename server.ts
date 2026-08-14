@@ -5,7 +5,7 @@ import dotenv from "dotenv";
 import fs from "fs";
 import type { AuthorEditAudit, AuthorVoiceSheet } from "./src/types";
 import { DEFAULT_MAX_AI_TELL_SCORE, normalizeMaxAiTellScore } from "./src/lib/coauthorQuality";
-import { createCoauthorRun, revisionOf, type CoauthorIntent, type CoauthorMode, type CoauthorRunRequest } from "./src/lib/coauthorContracts";
+import { coauthorIntentRequiresSourceText, createCoauthorRun, revisionOf, type CoauthorIntent, type CoauthorMode, type CoauthorRunRequest } from "./src/lib/coauthorContracts";
 import {
   DEFAULT_AUTHOR_MODEL,
   analysisSchema,
@@ -986,8 +986,12 @@ app.post("/api/coauthor/runs", async (req, res) => {
     const intent = coauthorIntents.includes(body.intent) ? body.intent as CoauthorIntent : "improve";
     const baseText = asText(rawInput.baseText);
     const claimedRevision = asText(body.target?.baseRevision, 128);
-    if (!body.target?.storyId || !baseText && intent !== "brainstorm" && intent !== "plan") {
-      return res.status(400).json({ error: "Нужны storyId и исходный текст для задачи Соавтора" });
+    if (!body.target?.storyId || (coauthorIntentRequiresSourceText(intent) && !baseText)) {
+      return res.status(400).json({
+        error: !body.target?.storyId
+          ? "Не выбрана книга для задачи Соавтора"
+          : "Для «Улучшить», «Переписать» или «Аудит» нужен исходный текст главы. «Продолжить» может начать пустую главу.",
+      });
     }
     const currentRevision = revisionOf(baseText);
     if (claimedRevision && claimedRevision !== currentRevision) {

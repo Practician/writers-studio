@@ -16,6 +16,11 @@ export type CoauthorIntent =
   | "plan"
   | "audit";
 
+/** Продолжение может начинать пустую главу; остальные текстовые действия требуют исходный текст. */
+export function coauthorIntentRequiresSourceText(intent: CoauthorIntent): boolean {
+  return intent === "rewrite" || intent === "improve" || intent === "audit";
+}
+
 export interface TextRange {
   start: number;
   end: number;
