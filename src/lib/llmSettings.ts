@@ -23,6 +23,16 @@ export const EMPTY_LLM_KEYS: StoredLlmKeys = {
   openrouter: "",
 };
 
+/** Gemini допускает несколько ключей в одном сохранённом поле через запятую, ; или новую строку. */
+export function splitLlmKeyList(value: string): string[] {
+  const keys = value.split(/[,;\n]+/u).map((key) => key.trim()).filter(Boolean);
+  return keys.length ? keys : [""];
+}
+
+export function joinLlmKeyList(keys: string[]): string {
+  return keys.map((key) => key.trim()).filter(Boolean).join(",");
+}
+
 export function loadLlmProvider(): LlmProviderChoice {
   const saved = localStorage.getItem(PROVIDER_LS);
 

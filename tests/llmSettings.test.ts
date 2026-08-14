@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadLlmKeys, saveLlmKeys } from "../src/lib/llmSettings";
+import { joinLlmKeyList, loadLlmKeys, saveLlmKeys, splitLlmKeyList } from "../src/lib/llmSettings";
 
 class MemoryStorage {
   private readonly values = new Map<string, string>();
@@ -17,6 +17,13 @@ class MemoryStorage {
     this.values.delete(key);
   }
 }
+
+test("Gemini key list renders and preserves each stored key", () => {
+  const values = splitLlmKeyList("gem-a, gem-b;\ngem-c");
+  assert.deepEqual(values, ["gem-a", "gem-b", "gem-c"]);
+  assert.equal(joinLlmKeyList([...values, "gem-d"]), "gem-a,gem-b,gem-c,gem-d");
+  assert.deepEqual(splitLlmKeyList(""), [""]);
+});
 
 test("saving one visible provider key preserves previously saved NVIDIA key", () => {
   const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");

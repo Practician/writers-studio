@@ -44,12 +44,14 @@ import {
 import { loadAuthorProfile, saveAuthorProfile } from "./lib/authorStorage";
 import {
   defaultModelForProvider,
+  joinLlmKeyList,
   loadLlmKeys,
   loadLlmProvider,
   llmRequestFields,
   providerLabel,
   saveLlmKeys,
   saveLlmProvider,
+  splitLlmKeyList,
   type LlmProviderChoice,
   type StoredLlmKeys,
 } from "./lib/llmSettings";
@@ -2015,6 +2017,14 @@ export default function App() {
                 ]
               ).map((row) => {
                 const hasBrowserKey = Boolean(llmKeysDraft[row.key]?.trim());
+                const isGemini = row.key === "gemini";
+                const visibleKeyValues = isGemini
+                  ? splitLlmKeyList(llmKeysDraft.gemini)
+                  : [llmKeysDraft[row.key]];
+                const setVisibleKeyValues = (values: string[]) => {
+                  const value = isGemini ? joinLlmKeyList(values) : (values[0] || "");
+                  setLlmKeysDraft((prev) => ({ ...prev, [row.key]: value }));
+                };
                 return (
                   <div
                     key={row.key}
@@ -2033,14 +2043,44 @@ export default function App() {
                         </span>
                       </div>
                     </div>
-                    <input
-                      type="password"
-                      autoComplete="off"
-                      placeholder={`Ключ · ${row.hint}`}
-                      value={llmKeysDraft[row.key]}
-                      onChange={(e) => setLlmKeysDraft((prev) => ({ ...prev, [row.key]: e.target.value }))}
-                      className="w-full bg-slate-950/80 border border-slate-700/70 rounded-lg px-3 py-2.5 text-slate-100 outline-none focus:border-amber-500/70 focus:ring-1 focus:ring-amber-500/20 font-mono text-[11px] placeholder:text-slate-600"
-                    />
+                    <div className="space-y-2">
+                      {visibleKeyValues.map((value, index) => (
+                        <div key={`${row.key}-${index}`} className="flex gap-2">
+                          <input
+                            type="password"
+                            autoComplete="off"
+                            placeholder={isGemini ? `Ключ Gemini ${index + 1} · ${row.hint}` : `Ключ · ${row.hint}`}
+                            value={value}
+                            onChange={(e) => {
+                              const next = [...visibleKeyValues];
+                              next[index] = e.target.value;
+                              setVisibleKeyValues(next);
+                            }}
+                            className="min-w-0 flex-1 bg-slate-950/80 border border-slate-700/70 rounded-lg px-3 py-2.5 text-slate-100 outline-none focus:border-amber-500/70 focus:ring-1 focus:ring-amber-500/20 font-mono text-[11px] placeholder:text-slate-600"
+                          />
+                          {isGemini && visibleKeyValues.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => setVisibleKeyValues(visibleKeyValues.filter((_, itemIndex) => itemIndex !== index))}
+                              className="px-2.5 text-slate-500 hover:text-red-300 border border-slate-700 hover:border-red-800 rounded-lg transition-colors cursor-pointer"
+                              title={`Удалить ключ Gemini ${index + 1} из формы`}
+                              aria-label={`Удалить ключ Gemini ${index + 1}`}
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                      {isGemini && (
+                        <button
+                          type="button"
+                          onClick={() => setVisibleKeyValues([...visibleKeyValues, ""])}
+                          className="px-2.5 py-1.5 text-[10px] font-semibold text-blue-300 hover:text-blue-100 border border-blue-700/50 hover:border-blue-500/70 bg-blue-950/30 hover:bg-blue-900/30 rounded-lg transition-colors cursor-pointer"
+                        >
+                          + Добавить ключ Gemini
+                        </button>
+                      )}
+                    </div>
                     <p className="text-[10px] text-slate-500">
                       Переменная окружения: <code className="text-slate-400">{row.env}</code>
                     </p>
