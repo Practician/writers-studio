@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { aiTellScore, pickBestChapterCandidate, rankChapterCandidate, resolveHumanizeDepth } from "../server/humanStyle";
 import {
   fallbackBeatsFromSynopsis,
+  buildCompletedBeatsLedger,
+  buildScenePrompt,
   buildPersonaAndStyle,
   humanizeProseDraft,
   rewriteDetectorAiSegments,
@@ -63,6 +65,29 @@ test("fallback beats for ch7/ch8 are not chapter-6 rings plot", () => {
     currentChapterSummary: "Кольца, еда, 20%, отпечаток не активирован.",
   }));
   assert.ok(ch6.some((b) => /кольц|заряд|еда|отпечат/i.test(`${b.title} ${b.goal}`)));
+});
+
+test("scene prompt marks completed beats as immutable story state", () => {
+  const beats = [
+    { title: "Дверь", goal: "Герой открывает деревянную дверь.", hook: "облупившаяся краска", endsWith: "входит в комнату" },
+    { title: "Записка", goal: "Герой читает предупреждение другого участника.", hook: "клочок бумаги", endsWith: "выбирает не подключать зарядку" },
+  ];
+  const ledger = buildCompletedBeatsLedger(beats, 1);
+  const prompt = buildScenePrompt(
+    baseInput({ currentChapterSummary: "Дверь, комната, записка и зарядка-ловушка." }),
+    beats[1],
+    1,
+    beats.length,
+    "Он уже вошёл в комнату и закрыл дверь за спиной.",
+    "",
+    "",
+    ledger,
+  );
+  assert.match(ledger, /Дверь: Герой открывает деревянную дверь/);
+  assert.match(prompt, /УЖЕ ЗАКРЫТЫЕ БИТЫ ЭТОЙ ГЛАВЫ/);
+  assert.match(prompt, /НЕ переписывай и НЕ вводи их заново/);
+  assert.match(prompt, /нельзя второй раз открывать ту же дверь/);
+  assert.match(prompt, /ТОЛЬКО текущий бит/);
 });
 
 test("touchup pipeline removes catalog stamps via mock model", async () => {

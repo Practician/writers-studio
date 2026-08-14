@@ -246,6 +246,7 @@ export function buildScenePrompt(
   previousTail: string,
   styleExtras: string,
   antiRepeatNotes = "",
+  completedBeatsLedger = "",
 ): string {
   const focus = SCENE_FOCUSES[beatIndex % SCENE_FOCUSES.length];
   return `Напиши фрагмент главы (бит ${beatIndex + 1} из ${beatCount}).
@@ -266,10 +267,11 @@ export function buildScenePrompt(
 Объём: 350–520 слов (полноценный кусок главы, не набросок). Раскрой действие и восприятие. Не добивай объём пустыми повторами и не пересказывай уже написанное.
 
 ${previousTail ? `Продолжай сразу после этого хвоста (не повторяй его дословно и не пересказывай теми же фразами):\n"""\n${previousTail}\n"""\n` : "Это начало главы после предыдущих событий канона.\n"}
+${completedBeatsLedger ? `УЖЕ ЗАКРЫТЫЕ БИТЫ ЭТОЙ ГЛАВЫ — это свершившиеся события, НЕ переписывай и НЕ вводи их заново:\n${completedBeatsLedger}\n` : ""}
 ${antiRepeatNotes ? `ЗАПРЕТ ПОВТОРОВ (уже было в предыдущих кусках — не копируй смысл дословно):\n${antiRepeatNotes}\n` : ""}
 
 Канон и контекст:
-- Синопсис главы: ${input.currentChapterSummary || "—"}
+- Полный синопсис главы — только справка; в этом фрагменте выполни ТОЛЬКО текущий бит: ${input.currentChapterSummary || "—"}
 ${input.canonDossier ? `- Замок канона (фрагмент): ${input.canonDossier.slice(0, 3500)}` : ""}
 ${input.worldBible ? `- Библия мира (фрагмент): ${input.worldBible.slice(0, 2000)}` : ""}
 
@@ -281,8 +283,9 @@ ${styleExtras}
 3. Не используй генеративные штампы и «голос ассистента».
 4. Закончи на действии/состоянии из endsWith, без морали и резюме.
 5. Продвинь сюжет: новое действие/поворот, а не повтор «шёл, считал, смотрел на заряд» и не переигровка колец гл.6.
-6. Чередуй длину фраз (очень короткие рядом с длинными) — избегай ровного «ИИ-ритма».
-7. Минимум 350 слов в этом фрагменте.`;
+6. Не возвращай героя к уже закрытому событию: нельзя второй раз открывать ту же дверь, заново входить в уже осмотренную комнату или повторно находить те же ресурсы. Используй состояние из хвоста и журнала как факт.
+7. Чередуй длину фраз (очень короткие рядом с длинными) — избегай ровного «ИИ-ритма».
+8. Минимум 350 слов в этом фрагменте.`;
 }
 
 /** Краткие заметки anti-repeat по уже написанным сценам. */
@@ -300,6 +303,19 @@ export function buildAntiRepeatNotes(previousScenes: string[]): string {
   if (tail) lines.push(`- Не пересказывай хвост: «…${tail}»`);
   lines.push("- Не начинай с тех же 4–6 слов, что предыдущий кусок.");
   return lines.join("\n");
+}
+
+/**
+ * Журнал закрытых сцен передаётся следующему вызову модели как состояние,
+ * а не как материал для нового пересказа. Это защищает полный черновик от
+ * повторного входа в ту же локацию и повторной разыгровки уже завершённого бита.
+ */
+export function buildCompletedBeatsLedger(beats: ChapterBeat[], completedCount: number): string {
+  const completed = beats.slice(0, Math.max(0, completedCount));
+  if (!completed.length) return "";
+  return completed
+    .map((beat, index) => `${index + 1}. ${beat.title}: ${beat.goal} Завершено: ${beat.endsWith}.`)
+    .join("\n");
 }
 
 export function buildSingleChapterPrompt(input: ChapterGenerateInput, styleExtras: string): string {
@@ -840,6 +856,7 @@ async function generateScenesDraft(
           tail,
           sceneStyle,
           antiRepeat + extra,
+          buildCompletedBeatsLedger(beats, index),
         ),
         temperature: modelTemperature(input.model, depth.sceneTemperature, candidateIndex) + attempt * 0.03,
         // free Groq TPM: max_tokens входит в лимит; сервер ещё урежет для groq
