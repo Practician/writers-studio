@@ -270,7 +270,8 @@ export function collectGroqKeys(): string[] {
 }
 
 export function collectOpenrouterKeys(): string[] {
-  return [];
+  const fromEnv = keysFromEnvList(["OPENROUTER_API_KEY", "OPENROUTER_API_KEY_2"]);
+  return mergeKeys(credentialsAls.getStore()?.openrouterApiKeys, fromEnv);
 }
 
 /** Разобрать apiKeys из body UI (строка или { gemini, nvidia, groq, openrouter }). */
@@ -753,6 +754,16 @@ export function resolveProvider(model?: string): LlmProviderId {
 }
 
 /** Ошибки, при которых имеет смысл сменить модель NVIDIA. */
+/**
+ * NVIDIA иногда возвращает 404 не для модели, а для удалённой account-function.
+ * Повтор моделей в таком случае бессмысленен: проблема относится к ключу/аккаунту.
+ */
+export function isNvidiaAccountFunctionNotFound(error: unknown): boolean {
+  const status = Number((error as any)?.status ?? (error as any)?.statusCode);
+  const details = String((error as any)?.body ?? (error as any)?.message ?? error ?? "");
+  return status === 404 && /function\s+['\"][^'\"]+['\"]:\s*not found for account/i.test(details);
+}
+
 export function isNvidiaModelFailoverError(error: unknown): boolean {
   const status = (error as any)?.status ?? (error as any)?.statusCode;
   const message = String((error as any)?.message ?? error ?? "");
@@ -925,6 +936,19 @@ async function generateViaNvidia(params: LlmGenerateParams): Promise<LlmGenerate
           lastError = error;
           const status = error?.status ?? error?.statusCode;
           const body = String(error?.body || error?.message || "");
+
+          // Удалённая NVIDIA-function отсутствует у аккаунта. Это не проблема модели:
+          // не перебираем весь каталог и сразу отдаём управление межпровайдерному fallback.
+          if (isNvidiaAccountFunctionNotFound(error)) {
+            llmLog("warn", "NVIDIA account-function недоступна (404) → переключаемся на резервный провайдер", "nvidia");
+            markKeyCooldown(key, 3_600_000, "nvidia-account-function-404");
+            const accountError = new Error(
+              "NVIDIA временно недоступна для этого ключа: удалённая функция аккаунта не найдена. Переключаемся на доступный провайдер.",
+            );
+            (accountError as any).status = 503;
+            (accountError as any).nvidiaAccountFunctionMissing = true;
+            throw accountError;
+          }
 
           // json_object не поддержан — пробуем без него на той же модели
           if (withJson && (status === 400 || /response_format|json_object/i.test(body))) {
@@ -1441,7 +1465,8 @@ export async function llmGenerate(params: LlmGenerateParams): Promise<LlmGenerat
       }
       
       console.warn(`[Fallback] Провайдер ${preferred} недоступен. Пробуем резервные...`);
-      const soft: LlmProviderId[] = ["gemini", "groq", "nvidia"].filter(x => x !== preferred) as LlmProviderId[];
+      const soft: LlmProviderId[] = ["gemini", "groq", "openrouter", "nvidia"]
+        .filter((id) => id !== preferred) as LlmProviderId[];
       let lastSoftError: any = error;
       
       for (const id of soft) {

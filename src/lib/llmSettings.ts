@@ -11,8 +11,10 @@ export interface StoredLlmKeys {
 
 const PROVIDER_LS = "writers_studio_llm_provider";
 const KEYS_LS = "writers_studio_llm_keys_v1";
-/** Одноразовая миграция: старый default NVIDIA → auto (Groq-first). */
+/** Одноразовая миграция: старый default NVIDIA → auto. */
 const PROVIDER_MIGRATE_V3 = "writers_studio_llm_provider_v3_groq_first";
+/** V4: исправляет уже сохранённый принудительный NVIDIA после вывода режима из UI. */
+const PROVIDER_MIGRATE_V4 = "writers_studio_llm_provider_v4_auto_fallback";
 
 export const EMPTY_LLM_KEYS: StoredLlmKeys = {
   gemini: "",
@@ -28,6 +30,16 @@ export function loadLlmProvider(): LlmProviderChoice {
   if (!localStorage.getItem(PROVIDER_MIGRATE_V3)) {
     localStorage.setItem(PROVIDER_MIGRATE_V3, "1");
     if (!saved || saved === "nvidia") {
+      localStorage.setItem(PROVIDER_LS, "auto");
+      return "auto";
+    }
+  }
+
+  // Даже если V3 уже отмечена, старый сохранённый NVIDIA не должен блокировать
+  // доступный Gemini/Groq при удалённой функции NVIDIA, возвращающей 404.
+  if (!localStorage.getItem(PROVIDER_MIGRATE_V4)) {
+    localStorage.setItem(PROVIDER_MIGRATE_V4, "1");
+    if (saved === "nvidia") {
       localStorage.setItem(PROVIDER_LS, "auto");
       return "auto";
     }

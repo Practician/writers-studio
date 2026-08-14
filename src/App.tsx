@@ -1410,7 +1410,11 @@ export default function App() {
               <Cpu className="w-3.5 h-3.5 text-slate-500 ml-0.5 shrink-0" />
               {(
                 [
+                  { id: "auto" as const, label: "Авто", active: "bg-emerald-600/35 text-emerald-200 border-emerald-600/50", hint: "Автовыбор доступного провайдера" },
                   { id: "gemini" as const, label: "Gemini", active: "bg-blue-600/35 text-blue-200 border-blue-600/50", hint: "Google Gemini" },
+                  { id: "groq" as const, label: "Groq", active: "bg-orange-600/35 text-orange-200 border-orange-600/50", hint: "Groq" },
+                  { id: "nvidia" as const, label: "NVIDIA", active: "bg-lime-600/35 text-lime-200 border-lime-600/50", hint: "NVIDIA NIM" },
+                  { id: "openrouter" as const, label: "Router", active: "bg-violet-600/35 text-violet-200 border-violet-600/50", hint: "OpenRouter" },
                 ] as const
               ).map((opt) => {
                 const ok = providerHasKey(opt.id);

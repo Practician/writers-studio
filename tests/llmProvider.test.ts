@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  isNvidiaAccountFunctionNotFound,
   isNvidiaModelFailoverError,
   isNvidiaModelName,
   normalizeModelName,
@@ -115,6 +116,23 @@ test("nvidia failover errors cover quota and unavailable models", () => {
   assert.equal(isNvidiaModelFailoverError(Object.assign(new Error("gone"), { status: 410 })), true);
 });
 
+test("NVIDIA account-function 404 is identified as provider-level failure", () => {
+  const accountFunctionError = Object.assign(
+    new Error("NVIDIA API 404"),
+    {
+      status: 404,
+      body: JSON.stringify({
+        status: 404,
+        title: "Not Found",
+        detail: "Function '23d4f03a-b8a6-4adb-a183-7daa083a09cc': Not found for account 'example'",
+      }),
+    },
+  );
+  assert.equal(isNvidiaAccountFunctionNotFound(accountFunctionError), true);
+  assert.equal(isNvidiaAccountFunctionNotFound(Object.assign(new Error("model not found"), { status: 404 })), false);
+  assert.equal(isNvidiaModelFailoverError(accountFunctionError), true);
+});
+
 test("nvidia RU rotation chain includes deepseek qwen mistral", () => {
   const chain = nvidiaModelChain();
   assert.ok(chain.some((m) => m.includes("deepseek")));
@@ -141,13 +159,14 @@ test("resolveSelectedModel maps UI provider to model family", () => {
 });
 
 test("parseRequestCredentials from UI body", async () => {
-  const { parseRequestCredentials, runWithLlmRequestContext, collectGroqKeys } = await import("../server/llmProvider");
-  const creds = parseRequestCredentials({ groq: "gsk_test_key", gemini: "gem-a,gem-b" });
+  const { parseRequestCredentials, runWithLlmRequestContext, collectGroqKeys, collectOpenrouterKeys } = await import("../server/llmProvider");
+  const creds = parseRequestCredentials({ groq: "gsk_test_key", gemini: "gem-a,gem-b", openrouter: "or_test_key" });
   assert.ok(creds);
   assert.deepEqual(creds?.groqApiKeys, ["gsk_test_key"]);
   assert.equal(creds?.geminiApiKeys?.length, 2);
 
   await runWithLlmRequestContext({ credentials: creds }, async () => {
     assert.ok(collectGroqKeys().includes("gsk_test_key"));
+    assert.ok(collectOpenrouterKeys().includes("or_test_key"));
   });
 });
