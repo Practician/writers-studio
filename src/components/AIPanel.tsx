@@ -358,7 +358,12 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
     setResultKind("normal");
     setHumanizeReport(null);
 
-    const isFinalDraft = activeTool === "continue" && continueMode === "final_draft";
+    // В реально отображаемом интерфейсе «Глава → Готовый» является полным
+    // проходом; старый отдельный режим оставлен совместимым с уже сохранённым состоянием.
+    const isFinalDraft = activeTool === "continue" && (
+      continueMode === "final_draft"
+      || (continueMode === "whole_chapter" && humanize && humanizeDepth === "maximum")
+    );
     setFinalDraftBaseRevision(isFinalDraft ? revisionOf(currentDraft) : null);
     let payload: any = { action: activeTool, ...(llmApiFields || { model: selectedModel, llmProvider }) };
     if (activeTool === "continue" || activeTool === "improve") {

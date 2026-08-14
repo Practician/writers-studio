@@ -276,6 +276,7 @@ test("humanize gate and depth resolution", () => {
   const dirty = aiTellScore("Это был не просто страх. Волна ужаса накрыла его, и время словно остановилось.");
   assert.equal(humanizeGatePassed(dirty, 8), false);
   assert.equal(resolveHumanizeDepth("maximum").id, "maximum");
+  assert.equal(resolveHumanizeDepth("maximum").title, "Готовый");
   assert.equal(resolveHumanizeDepth("nope").id, "balanced");
   assert.ok(HUMANIZE_DEPTHS.maximum.sceneGeneration);
   assert.ok(HUMANIZE_DEPTHS.maximum.minAuthorSampleChars >= 300);

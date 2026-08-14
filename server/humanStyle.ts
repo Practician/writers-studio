@@ -503,8 +503,8 @@ export const HUMANIZE_DEPTHS: Record<HumanizeDepth, HumanizeDepthConfig> = {
   },
   maximum: {
     id: "maximum",
-    title: "Максимум",
-    description: "Сцены + best-of-3 черновиков + best-of-N абзацев + gate",
+    title: "Готовый",
+    description: "Полный черновик: сцены + best-of-3 + best-of-N + финальная доводка",
     sceneGeneration: true,
     maxTouchupBlocks: 20,
     touchupRounds: 2,
