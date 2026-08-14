@@ -1406,7 +1406,11 @@ export default function App() {
               <Cpu className="w-3.5 h-3.5 text-slate-500 ml-0.5 shrink-0" />
               {(
                 [
+                  { id: "auto" as const, label: "Авто", active: "bg-violet-600/35 text-violet-200 border-violet-600/50", hint: "Автовыбор: Gemini → Groq → NVIDIA" },
                   { id: "gemini" as const, label: "Gemini", active: "bg-blue-600/35 text-blue-200 border-blue-600/50", hint: "Google Gemini" },
+                  { id: "groq" as const, label: "Groq", active: "bg-orange-600/35 text-orange-200 border-orange-600/50", hint: "Groq API" },
+                  { id: "nvidia" as const, label: "NVIDIA", active: "bg-green-600/35 text-green-200 border-green-600/50", hint: "NVIDIA NIM" },
+                  { id: "openrouter" as const, label: "OpenRouter", active: "bg-pink-600/35 text-pink-200 border-pink-600/50", hint: "OpenRouter" },
                 ] as const
               ).map((opt) => {
                 const ok = providerHasKey(opt.id);

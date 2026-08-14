@@ -352,6 +352,21 @@ app.post("/api/writer/author", async (req, res) => {
 
 // Writer Assistant API Route
 app.post("/api/writer/ai", async (req, res) => {
+  // Отмена в браузере должна останавливать не только fetch, но и весь серверный
+  // pipeline (включая humanize/best-of-N и переходы между провайдерами).
+  const requestAbortController = new AbortController();
+  const abortOnDisconnect = () => {
+    if (!res.writableEnded && !requestAbortController.signal.aborted) {
+      requestAbortController.abort(new Error("Клиент остановил генерацию"));
+    }
+  };
+  req.once("aborted", abortOnDisconnect);
+  res.once("close", abortOnDisconnect);
+  const cleanupRequestAbort = () => {
+    req.removeListener("aborted", abortOnDisconnect);
+    res.removeListener("close", abortOnDisconnect);
+  };
+
   const { 
     action, 
     text, 
@@ -723,6 +738,7 @@ ${text || ""}
         responseMimeType: params.responseMimeType,
         responseSchema: params.responseSchema,
         maxOutputTokens: params.maxOutputTokens,
+        abortSignal: requestAbortController.signal,
       });
       return llmTextOrThrow(result, "Генерация");
     };
@@ -804,6 +820,7 @@ ${text || ""}
       temperature,
       responseMimeType,
       responseSchema,
+      abortSignal: requestAbortController.signal,
     });
 
     let reply = llmTextOrThrow(llmResult, "Генерация");
@@ -849,6 +866,10 @@ ${text || ""}
     }); // runWithLlmRequestContext
 
   } catch (error: any) {
+    if (requestAbortController.signal.aborted || error?.name === "AbortError") {
+      console.warn("Writer AI generation cancelled by client");
+      return;
+    }
     console.error("LLM API Error:", error);
     const status = error?.status ?? error?.statusCode;
     const isOverloaded = status === 503 || status === 500;
@@ -864,7 +885,11 @@ ${text || ""}
       userMessage = message;
     }
 
-    res.status(isOverloaded ? 503 : isQuotaExhausted ? 429 : 500).json({ error: userMessage });
+    if (!res.headersSent) {
+      res.status(isOverloaded ? 503 : isQuotaExhausted ? 429 : 500).json({ error: userMessage });
+    }
+  } finally {
+    cleanupRequestAbort();
   }
 });
 

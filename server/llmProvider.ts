@@ -154,6 +154,7 @@ const BUILTIN_NVIDIA_FALLBACKS = [
   "z-ai/glm-5.2",
   "minimaxai/minimax-m3",
   "stepfun-ai/step-3.7-flash",
+  "qwen/qwen3-235b-a22b-instruct-2507",
   "moonshotai/kimi-k2.6",
   // Tier B — быстрые, стабильно отдают русский (Mistral family)
   "mistralai/mistral-nemotron",
@@ -217,14 +218,29 @@ function splitList(raw: string): string[] {
     .filter(Boolean);
 }
 
+function abortError(): Error {
+  const error = new Error("Aborted by user");
+  error.name = "AbortError";
+  return error;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError();
+}
+
+function combineAbortSignals(externalSignal: AbortSignal | undefined, timeoutSignal: AbortSignal): AbortSignal {
+  if (!externalSignal) return timeoutSignal;
+  return AbortSignal.any([externalSignal, timeoutSignal]);
+}
+
 async function delay(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) throw new Error("Aborted by user");
+  if (signal?.aborted) throw abortError();
   return new Promise((resolve, reject) => {
     const timer = setTimeout(resolve, ms);
     if (signal) {
       const onAbort = () => {
         clearTimeout(timer);
-        reject(new Error("Aborted by user"));
+        reject(abortError());
       };
       signal.addEventListener("abort", onAbort, { once: true });
     }
@@ -817,6 +833,7 @@ async function callNvidiaOnce(
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const requestSignal = combineAbortSignals(params.abortSignal, controller.signal);
   let response: Response;
   try {
     response = await fetch(`${nvidiaBaseUrl()}/chat/completions`, {
@@ -827,10 +844,11 @@ async function callNvidiaOnce(
         Accept: "application/json",
       },
       body: JSON.stringify(body),
-      signal: controller.signal,
+      signal: requestSignal,
     });
   } catch (error: any) {
     clearTimeout(timer);
+    if (params.abortSignal?.aborted) throw abortError();
     if (error?.name === "AbortError" || /aborted|timeout/i.test(String(error?.message || ""))) {
       const err = new Error(`NVIDIA API timeout after ${timeoutMs}ms (${model})`);
       (err as any).status = 408;
@@ -912,7 +930,7 @@ async function generateViaNvidia(params: LlmGenerateParams): Promise<LlmGenerate
 
       const jsonModes = wantsJson ? [true, false] : [false];
       for (const withJson of jsonModes) {
-        if (params.abortSignal?.aborted) throw new Error("Aborted by user");
+        throwIfAborted(params.abortSignal);
         attempts += 1;
         try {
           const result = await callNvidiaOnce(model, key, params, withJson);
@@ -921,6 +939,7 @@ async function generateViaNvidia(params: LlmGenerateParams): Promise<LlmGenerate
           }
           return { ...result, failoverCount: Math.max(0, modelIndex + keyIndex + skippedCooldown) };
         } catch (error: any) {
+          if (params.abortSignal?.aborted) throw abortError();
           lastError = error;
           const status = error?.status ?? error?.statusCode;
           const body = String(error?.body || error?.message || "");
@@ -1055,6 +1074,7 @@ async function callOpenAiCompatOnce(
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const requestSignal = combineAbortSignals(params.abortSignal, controller.signal);
   let response: Response;
   try {
     response = await fetch(`${baseUrl}/chat/completions`, {
@@ -1066,10 +1086,11 @@ async function callOpenAiCompatOnce(
         ...(extraHeaders || {}),
       },
       body: JSON.stringify(body),
-      signal: controller.signal,
+      signal: requestSignal,
     });
   } catch (error: any) {
     clearTimeout(timer);
+    if (params.abortSignal?.aborted) throw abortError();
     if (error?.name === "AbortError" || /aborted|timeout/i.test(String(error?.message || ""))) {
       const err = new Error(`${provider} timeout after ${timeoutMs}ms (${model})`);
       (err as any).status = 408;
@@ -1148,7 +1169,7 @@ async function generateViaOpenAiChain(
 
       const jsonModes = wantsJson ? [true, false] : [false];
       for (const withJson of jsonModes) {
-        if (params.abortSignal?.aborted) throw new Error("Aborted by user");
+        throwIfAborted(params.abortSignal);
         attempts += 1;
         try {
           const result = await callOpenAiCompatOnce(
@@ -1168,6 +1189,7 @@ async function generateViaOpenAiChain(
           }
           return { ...result, failoverCount: Math.max(0, modelIndex + keyIndex) };
         } catch (error: any) {
+          if (params.abortSignal?.aborted) throw abortError();
           lastError = error;
           const status = error?.status ?? error?.statusCode;
           const body = String(error?.body || error?.message || "");
@@ -1180,6 +1202,7 @@ async function generateViaOpenAiChain(
           if (status === 401 || status === 403) {
             llmLog("error", `${provider} key #${keyIndex + 1} отклонён (${status}) → cooldown 24h`, provider);
             markKeyCooldown(key, 86_400_000, `${provider}-invalid-key`);
+            if (keys.every((candidate) => isKeyOnCooldown(candidate))) throw lastError;
             break; // → следующий ключ
           }
 
@@ -1187,6 +1210,7 @@ async function generateViaOpenAiChain(
           if (status === 402 || /Insufficient credits/i.test(body)) {
             llmLog("error", `${provider} key #${keyIndex + 1} нет кредитов (${status}) → cooldown 12h`, provider);
             markKeyCooldown(key, 43_200_000, `${provider}-no-credits`);
+            if (keys.every((candidate) => isKeyOnCooldown(candidate))) throw lastError;
             break; // → следующий ключ
           }
 
@@ -1201,6 +1225,7 @@ async function generateViaOpenAiChain(
           if (status === 413 || /tokens per minute|TPM|Rate limit/i.test(body)) {
             llmLog("warn", `${provider} key #${keyIndex + 1} TPM limit → cooldown 20s`, provider);
             markKeyCooldown(key, 20_000, `${provider}-tpm-limit`);
+            if (keys.every((candidate) => isKeyOnCooldown(candidate))) throw lastError;
             break; // → следующий ключ
           }
 
@@ -1248,6 +1273,7 @@ async function callGeminiOnce(
     config.thinkingConfig = { thinkingBudget: 0 };
   }
 
+  throwIfAborted(params.abortSignal);
   const generatePromise = client.models.generateContent({
     model: modelName,
     contents: params.contents,
@@ -1255,6 +1281,12 @@ async function callGeminiOnce(
   });
 
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const abortPromise = params.abortSignal
+    ? new Promise<never>((_resolve, reject) => {
+      if (params.abortSignal?.aborted) reject(abortError());
+      else params.abortSignal?.addEventListener("abort", () => reject(abortError()), { once: true });
+    })
+    : null;
   const timeoutPromise = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
       const err = new Error(`Gemini timeout after ${timeoutMs}ms (${modelName})`);
@@ -1265,7 +1297,9 @@ async function callGeminiOnce(
 
   let response: Awaited<ReturnType<typeof client.models.generateContent>>;
   try {
-    response = await Promise.race([generatePromise, timeoutPromise]);
+    response = await Promise.race(
+      abortPromise ? [generatePromise, timeoutPromise, abortPromise] : [generatePromise, timeoutPromise],
+    );
   } catch (error: any) {
     // Обогащаем ошибку SDK данными о retryDelay чтобы isDailyQuotaExhausted работал корректно
     if (!error.body && error.message) {
@@ -1332,6 +1366,7 @@ async function generateViaGemini(params: LlmGenerateParams): Promise<LlmGenerate
         }
         return { ...result, failoverCount: modelIndex + keyIndex };
       } catch (error: any) {
+        if (params.abortSignal?.aborted) throw abortError();
         lastError = error;
         const status = error?.status ?? error?.statusCode;
         const message = String(error?.message ?? "");
@@ -1340,6 +1375,7 @@ async function generateViaGemini(params: LlmGenerateParams): Promise<LlmGenerate
           if (isDailyQuotaExhausted(error)) {
             console.warn(`Gemini key #${keyIndex + 1} daily quota exhausted → key cooldown 1h`);
             markKeyCooldown(key, 3_600_000, "gemini-daily-quota");
+            if (keys.every((candidate) => isKeyOnCooldown(candidate))) throw lastError;
             continue;
           } else {
             let delayMs = 20000;
@@ -1354,6 +1390,7 @@ async function generateViaGemini(params: LlmGenerateParams): Promise<LlmGenerate
             }
             console.warn(`Gemini key #${keyIndex + 1} RPM limit. Охлаждаем ключ на ${Math.round(delayMs/1000)}с и идём дальше...`);
             markKeyCooldown(key, delayMs, "gemini-rpm-limit");
+            if (keys.every((candidate) => isKeyOnCooldown(candidate))) throw lastError;
             continue;
           }
         }
@@ -1361,6 +1398,7 @@ async function generateViaGemini(params: LlmGenerateParams): Promise<LlmGenerate
         if (status === 401 || status === 403) {
           console.warn(`Gemini key #${keyIndex + 1} invalid (${status}) → key cooldown 24h`);
           markKeyCooldown(key, 86_400_000, "gemini-invalid-key");
+          if (keys.every((candidate) => isKeyOnCooldown(candidate))) throw lastError;
           continue;
         }
 
@@ -1390,6 +1428,7 @@ async function generateViaGemini(params: LlmGenerateParams): Promise<LlmGenerate
  * Иначе только выбранный провайдер (свои модели внутри).
  */
 export async function llmGenerate(params: LlmGenerateParams): Promise<LlmGenerateResult> {
+  throwIfAborted(params.abortSignal);
   const pref = providerPreference();
   const preferred = resolveProvider(params.model);
 
@@ -1433,9 +1472,10 @@ export async function llmGenerate(params: LlmGenerateParams): Promise<LlmGenerat
     try {
       console.warn(`LLM → ${preferred} (pref=${pref}, model=${params.model || "default"})`);
       return await runOne(preferred);
-    } catch (error: any) {
-      const status = error?.status ?? error?.statusCode;
-      if (status === 401 || status === 403) {
+      } catch (error: any) {
+        if (params.abortSignal?.aborted) throw abortError();
+        const status = error?.status ?? error?.statusCode;
+        if (status === 401 || status === 403) {
          throw error; // If auth fails on explicitly chosen provider, don't silently fallback, let them know.
       }
       
@@ -1482,6 +1522,7 @@ export async function llmGenerate(params: LlmGenerateParams): Promise<LlmGenerat
       }
       return await runOne(id);
     } catch (error: any) {
+      if (params.abortSignal?.aborted) throw abortError();
       lastError = error;
       const msg = String(error?.message || error);
       // Детектор тотального сетевого сбоя: если провайдер говорит fetch failed — считаем
