@@ -7,6 +7,7 @@ import {
   parseJsonResponse,
 } from "./authorPipeline";
 import { compareStyle } from "../src/lib/authorAudit";
+import type { AuthorRules } from "../src/types";
 import {
   aiTellScore,
   blockHumanizeIssues,
@@ -47,6 +48,7 @@ export interface ChapterGenerateInput {
   customPrompt: string;
   authorSample?: string;
   voiceSheet?: unknown;
+  authorRules?: AuthorRules;
   voicePreset?: string;
   humanizeDepth?: HumanizeDepth | string;
   adaptiveStyleGuidance?: string;
@@ -179,11 +181,21 @@ export function buildPersonaAndStyle(
   input: ChapterGenerateInput,
 ): { personaBlock: string; styleBlock: string; fewShots: string; statsBlock: string } {
   const preset = voicePresetById(input.voicePreset);
-  const personaBlock = input.voiceSheet
+  const voiceBlock = input.voiceSheet
     ? voicePersonaBlock(input.voiceSheet)
     : preset
       ? `ПЕРСОНА РАССКАЗЧИКА:\n${preset.directives}`
       : "";
+  const rules = input.authorRules;
+  const authorRulesBlock = rules && (rules.must.length || rules.avoid.length || rules.preferences.length)
+    ? [
+      "ЯВНЫЕ ПРАВИЛА АВТОРА — они важнее статистического сходства:",
+      rules.must.length ? `ОБЯЗАТЕЛЬНО: ${rules.must.join("; ")}` : "",
+      rules.avoid.length ? `НЕ ИСПОЛЬЗОВАТЬ: ${rules.avoid.join("; ")}` : "",
+      rules.preferences.length ? `ПРЕДПОЧТЕНИЯ: ${rules.preferences.join("; ")}` : "",
+    ].filter(Boolean).join("\n")
+    : "";
+  const personaBlock = [voiceBlock, authorRulesBlock].filter(Boolean).join("\n\n");
   const sample = typeof input.authorSample === "string" ? input.authorSample.trim() : "";
   const styleTarget = input.previousChapter || input.currentChapterSummary || "";
   const excerpts = sample.length >= 300 ? selectStyleExcerpts(sample.slice(0, 50_000), styleTarget) : "";

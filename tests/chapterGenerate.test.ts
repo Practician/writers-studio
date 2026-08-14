@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { aiTellScore, pickBestChapterCandidate, rankChapterCandidate, resolveHumanizeDepth } from "../server/humanStyle";
 import {
   fallbackBeatsFromSynopsis,
+  buildPersonaAndStyle,
   humanizeProseDraft,
   rewriteDetectorAiSegments,
   runTouchupPipeline,
@@ -25,6 +26,19 @@ function baseInput(partial: Partial<ChapterGenerateInput>): ChapterGenerateInput
     ...partial,
   };
 }
+
+test("full chapter style block gives explicit author rules priority", () => {
+  const profile = buildPersonaAndStyle(baseInput({
+    authorRules: {
+      must: ["Сохраняй близкий POV"],
+      avoid: ["Не использовать слово «вдруг»"],
+      preferences: ["Показывай эмоцию через действие"],
+    },
+  }));
+  assert.match(profile.personaBlock, /ЯВНЫЕ ПРАВИЛА АВТОРА/);
+  assert.match(profile.personaBlock, /ОБЯЗАТЕЛЬНО: Сохраняй близкий POV/);
+  assert.match(profile.personaBlock, /НЕ ИСПОЛЬЗОВАТЬ: Не использовать слово «вдруг»/);
+});
 
 test("fallback beats for ch7/ch8 are not chapter-6 rings plot", () => {
   const ch7 = fallbackBeatsFromSynopsis(baseInput({

@@ -380,6 +380,7 @@ app.post("/api/writer/ai", async (req, res) => {
     chapterCandidates,
     detectorSegments,
     adaptiveStyleGuidance,
+    authorRules,
     llmProvider: llmProviderRaw,
     apiKeys,
   } = req.body;
@@ -688,11 +689,14 @@ ${text || ""}
       typeof model === "string" ? model : undefined,
       llmProvider || undefined,
     );
-    const depthConfig = resolveHumanizeDepth(humanizeDepth);
+    const isFinalDraftAction = action === "generate_final_draft";
+    // Финальный черновик всегда проходит максимальный художественный конвейер,
+    // независимо от случайно присланного клиентом значения глубины.
+    const depthConfig = resolveHumanizeDepth(isFinalDraftAction ? "maximum" : humanizeDepth);
 
     // «Очеловечивание с первого прохода»: для художественных действий добавляем
     // правила живого текста и персону рассказчика прямо в системную инструкцию.
-    const isProseAction = action === "continue" || action === "improve" || action === "generate_full_chapter";
+    const isProseAction = action === "continue" || action === "improve" || action === "generate_full_chapter" || isFinalDraftAction;
     const humanizeEnabled = isProseAction && humanize !== false;
     let personaBlock = "";
     if (humanizeEnabled) {
@@ -766,7 +770,7 @@ ${text || ""}
     }
 
     // Полная глава с humanize: сцены + best-of-N + multi-pass (см. chapterGenerate.ts).
-    if (action === "generate_full_chapter" && humanizeEnabled) {
+    if ((action === "generate_full_chapter" || isFinalDraftAction) && humanizeEnabled) {
       const generated = await generateHumanizedChapter({
         title: String(title || ""),
         genre: String(genre || ""),
@@ -780,16 +784,18 @@ ${text || ""}
         customPrompt: String(customPrompt || ""),
         authorSample: typeof authorSample === "string" ? authorSample : undefined,
         voiceSheet,
+        authorRules: asAuthorRules(authorRules),
         voicePreset: typeof voicePreset === "string" ? voicePreset : undefined,
         humanizeDepth: depthConfig.id,
         adaptiveStyleGuidance: typeof adaptiveStyleGuidance === "string" ? adaptiveStyleGuidance.slice(0, 4_000) : undefined,
-        chapterCandidates: typeof chapterCandidates === "number" ? chapterCandidates : undefined,
+        chapterCandidates: isFinalDraftAction ? 3 : typeof chapterCandidates === "number" ? chapterCandidates : undefined,
         model: selectedModel,
       }, callGenerate);
       return res.json({
         result: generated.text,
         humanizeReport: generated.humanizeReport,
         provider: "chapter-pipeline",
+        draftKind: isFinalDraftAction ? "final" : "chapter",
         model: selectedModel,
         llmProvider: llmProvider || undefined,
       });

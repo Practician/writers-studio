@@ -7,6 +7,7 @@ import { loadAuthorProfile, onAuthorProfileUpdated } from "../lib/authorStorage"
 import { canonDossier, findPreviousCanonChapter } from "../lib/chapterContext";
 import { HUMANIZE_DEPTHS, VOICE_PRESETS, type HumanizeDepth } from "../../server/humanStyle";
 import { buildAdaptiveWritingGuidance, loadAdaptiveProfile } from "../lib/adaptiveDetector";
+import { revisionOf } from "../lib/coauthorContracts";
 
 interface AIPanelProps {
   story: Story;
@@ -32,6 +33,8 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
   }, [openAuthorRequest]);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState("");
+  const [resultKind, setResultKind] = useState<"normal" | "final_draft">("normal");
+  const [finalDraftBaseRevision, setFinalDraftBaseRevision] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** Отмена текущей генерации (Продолжить сюжет / пакет глав / улучшение / идеи). */
@@ -52,7 +55,7 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
   }, []);
 
   // Continuation States
-  const [continueMode, setContinueMode] = useState<"paragraphs" | "whole_chapter" | "multi_chapters">("paragraphs");
+  const [continueMode, setContinueMode] = useState<"paragraphs" | "whole_chapter" | "multi_chapters" | "final_draft">("paragraphs");
   const [continuePrompt, setContinuePrompt] = useState("");
   const [selectedBatchChapters, setSelectedBatchChapters] = useState<string[]>([]);
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; status: string } | null>(null);
@@ -131,11 +134,12 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
   }, [story.id]);
 
   // Дополняет запрос генерации данными для «очеловечивания с первого прохода»
-  const applyHumanizePayload = (payload: any, excludeChapterId?: string) => {
-    payload.humanize = humanize;
-    if (!humanize) return;
-    payload.humanizeDepth = humanizeDepth;
+  const applyHumanizePayload = (payload: any, excludeChapterId?: string, forceMaximum = false) => {
+    payload.humanize = forceMaximum || humanize;
+    if (!payload.humanize) return;
+    payload.humanizeDepth = forceMaximum ? "maximum" : humanizeDepth;
     if (authorProfile?.voiceSheet) payload.voiceSheet = authorProfile.voiceSheet;
+    if (authorProfile?.authorRules) payload.authorRules = authorProfile.authorRules;
     const sample = resolveAuthorSample(excludeChapterId ?? activeChapter?.id);
     if (sample) payload.authorSample = sample;
     if (!authorProfile?.voiceSheet) payload.voicePreset = voicePreset;
@@ -153,10 +157,31 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
     onInsertText(result, actionType);
   };
 
+  const handleApplyFinalDraft = () => {
+    if (!activeChapter || !onUpdateStoryChapters || !result.trim()) return;
+    if (!finalDraftBaseRevision || revisionOf(currentDraft) !== finalDraftBaseRevision) {
+      setError("Глава изменилась после запуска готового черновика. Ничего не заменено: скопируйте вариант или сравните его вручную.");
+      return;
+    }
+    if (!window.confirm("Заменить текст текущей главы готовым черновиком? Исходный текст будет заменён только после этого подтверждения.")) return;
+    onUpdateStoryChapters(story.chapters.map((chapter) => chapter.id === activeChapter.id ? { ...chapter, content: result } : chapter));
+    setError(null);
+  };
+
   // Detect Materials for Chapter Generation
   const getPrevChapter = () => {
     if (!activeChapter || !story.chapters) return null;
     return findPreviousCanonChapter(story.chapters, activeChapter);
+  };
+
+  const chapterBrief = (chapter?: Chapter): string => {
+    if (!chapter) return "";
+    const plan = chapter.scenePlan;
+    if (!plan) return chapter.summary || "";
+    return [
+      chapter.summary,
+      `Сценовая доска — POV: ${plan.pov}; цель: ${plan.purpose}; конфликт: ${plan.conflict}; поворот: ${plan.turn}; последствие: ${plan.outcome}`,
+    ].filter(Boolean).join("\n");
   };
 
   const getBibleSummary = () => {
@@ -242,7 +267,7 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
           genre: story.genre,
           description: story.description,
           currentChapterTitle: ch.title,
-          currentChapterSummary: ch.summary || "",
+          currentChapterSummary: chapterBrief(ch),
           previousChapter: prevChapterContent,
           worldBible: worldBibleText,
           bookPlan: bookPlanText,
@@ -314,11 +339,10 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
       || buildFallbackAuthorSample(activeChapter?.id).length >= 300;
 
     if (
-      humanize
-      && humanizeDepth === "maximum"
+      (humanize && humanizeDepth === "maximum" || continueMode === "final_draft")
       && !liveHasSample
       && activeTool === "continue"
-      && continueMode === "whole_chapter"
+      && (continueMode === "whole_chapter" || continueMode === "final_draft")
     ) {
       setError("Режим «Максимум» нужен образец стиля (≥300 знаков): вкладка «Автор» или уже написанные главы. Либо выберите «Баланс» / «Быстро».");
       return;
@@ -331,20 +355,24 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
     setLoading(true);
     setError(null);
     setResult("");
+    setResultKind("normal");
     setHumanizeReport(null);
 
+    const isFinalDraft = activeTool === "continue" && continueMode === "final_draft";
+    setFinalDraftBaseRevision(isFinalDraft ? revisionOf(currentDraft) : null);
     let payload: any = { action: activeTool, ...(llmApiFields || { model: selectedModel, llmProvider }) };
     if (activeTool === "continue" || activeTool === "improve") {
-      applyHumanizePayload(payload, activeChapter?.id);
+      applyHumanizePayload(payload, activeChapter?.id, isFinalDraft);
       // State может отставать — явная подстановка свежего образца из IndexedDB
       if (liveProfileSample.length >= 300) {
         payload.authorSample = liveProfileSample;
         if (liveProfile?.voiceSheet) payload.voiceSheet = liveProfile.voiceSheet;
+        if (liveProfile?.authorRules) payload.authorRules = liveProfile.authorRules;
       }
     }
 
     if (activeTool === "continue") {
-      if (continueMode === "whole_chapter") {
+      if (continueMode === "whole_chapter" || continueMode === "final_draft") {
         const prevCh = getPrevChapter();
         const prevChapterContent = prevCh ? `Глава: ${prevCh.title}\n\n${prevCh.content}` : "";
         
@@ -358,12 +386,17 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
         );
         const bookPlanText = story.bookPlan || (planChapter ? planChapter.content : "");
 
-        payload.action = "generate_full_chapter";
+        payload.action = isFinalDraft ? "generate_final_draft" : "generate_full_chapter";
+        if (isFinalDraft) {
+          payload.humanize = true;
+          payload.humanizeDepth = "maximum";
+          payload.chapterCandidates = 3;
+        }
         payload.title = story.title;
         payload.genre = story.genre;
         payload.description = story.description;
         payload.currentChapterTitle = activeChapter?.title || "Без названия";
-        payload.currentChapterSummary = activeChapter?.summary || "Без синопсиса";
+        payload.currentChapterSummary = chapterBrief(activeChapter) || "Без синопсиса";
         payload.previousChapter = prevChapterContent;
         payload.worldBible = worldBibleText;
         payload.bookPlan = bookPlanText;
@@ -398,6 +431,7 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
       const data = await response.json();
       if (controller.signal.aborted) return;
       setResult(data.result);
+      setResultKind(data.draftKind === "final" ? "final_draft" : "normal");
       setHumanizeReport(data.humanizeReport ?? null);
     } catch (err: any) {
       if (err?.name === "AbortError" || controller.signal.aborted) {
@@ -488,6 +522,17 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
                 }`}
               >
                 📚 Глава
+              </button>
+              <button
+                type="button"
+                onClick={() => setContinueMode("final_draft")}
+                className={`flex-1 py-1.5 text-center rounded-lg transition-all ${
+                  continueMode === "final_draft"
+                    ? "bg-emerald-950/40 text-emerald-300 border border-emerald-800/40"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                ✦ Готовый
               </button>
               <button
                 type="button"
@@ -601,6 +646,17 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
                     className="w-full bg-slate-950 border border-slate-800 focus:border-purple-500 rounded p-2.5 text-xs text-slate-200 outline-none font-sans"
                   />
                 </div>
+              </div>
+            )}
+
+            {continueMode === "final_draft" && (
+              <div className="space-y-4">
+                <div className="bg-emerald-950/25 border border-emerald-900/40 p-3.5 rounded-xl space-y-2">
+                  <h4 className="text-[11px] text-emerald-300 font-bold uppercase tracking-wider flex items-center gap-1.5"><Sparkles className="w-3.5 h-3.5 text-emerald-400" />Полностью готовый черновик</h4>
+                  <p className="text-[10px] text-slate-300 leading-relaxed">Создаёт самостоятельный вариант главы: планирование сцен, три полных кандидата, отбор по голосу автора и локальным сигналам качества, затем несколько проходов художественной доводки.</p>
+                  <ul className="space-y-1 text-[10px] text-emerald-200/80"><li>✓ Режим «Максимум» зафиксирован</li><li>✓ Нужен образец автора не менее 300 знаков</li><li>✓ Канон, предыдущая глава, Библия мира и план сюжета учитываются</li><li>✓ Черновик не заменит главу без отдельного подтверждения</li></ul>
+                </div>
+                <div className="space-y-1"><label className="block text-[11px] text-slate-400 font-semibold uppercase tracking-wider">Фокус готовой главы</label><textarea value={continuePrompt} onChange={(event) => setContinuePrompt(event.target.value)} placeholder="Опишите обязательное событие, эмоциональный сдвиг и желаемый финальный эффект сцены." rows={4} className="w-full bg-slate-950 border border-emerald-900/60 focus:border-emerald-500 rounded p-2.5 text-xs text-slate-200 outline-none font-sans" /></div>
               </div>
             )}
 
@@ -953,7 +1009,7 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
           >
             <Wand2 className="w-4 h-4" />
             <span>
-              {activeTool === "continue" && (continueMode === "whole_chapter" ? "Написать целую главу" : "Сгенерировать продолжение")}
+              {activeTool === "continue" && (continueMode === "final_draft" ? "Создать готовый черновик" : continueMode === "whole_chapter" ? "Написать целую главу" : "Сгенерировать продолжение")}
               {activeTool === "improve" && "Отполировать текст"}
               {activeTool === "brainstorm" && "Устроить мозговой штурм"}
             </span>
@@ -971,7 +1027,7 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
           <div className="bg-slate-950/60 border border-slate-800 rounded-xl overflow-hidden mt-4" id="ai-result-block">
             {/* Result Header */}
             <div className="flex justify-between items-center bg-slate-900 p-2 px-3 border-b border-slate-800">
-              <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Результат ИИ</span>
+              <span className={`text-[10px] font-bold uppercase tracking-wide ${resultKind === "final_draft" ? "text-emerald-300" : "text-slate-400"}`}>{resultKind === "final_draft" ? "Готовый черновик после полного прохода" : "Результат ИИ"}</span>
               <div className="flex gap-1">
                 <button
                   onClick={handleCopy}
@@ -1045,7 +1101,10 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
 
             {/* Quick Insertion Actions */}
             <div className="bg-slate-950/40 p-2.5 border-t border-slate-800 flex gap-2 justify-end">
-              {activeTool === "continue" && (
+              {resultKind === "final_draft" && (
+                <button onClick={handleApplyFinalDraft} className="px-3 py-1.5 bg-emerald-600/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-600 hover:text-white transition-all text-[11px] rounded font-semibold cursor-pointer flex items-center gap-1">Принять как текст главы<ArrowRight className="w-3.5 h-3.5" /></button>
+              )}
+              {activeTool === "continue" && resultKind !== "final_draft" && (
                 <button
                   onClick={() => handleUseResult("append")}
                   className="px-3 py-1.5 bg-blue-600/20 text-blue-400 border border-blue-500/20 hover:bg-blue-600 hover:text-white transition-all text-[11px] rounded font-semibold cursor-pointer flex items-center gap-1"
