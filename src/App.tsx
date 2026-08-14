@@ -1985,6 +1985,33 @@ export default function App() {
                     accent: "border-blue-500/25 bg-blue-950/20",
                     badge: "text-blue-300 bg-blue-950/50 border-blue-800/40",
                   },
+                  {
+                    key: "nvidia" as const,
+                    label: "NVIDIA NIM",
+                    hint: "build.nvidia.com → Get API Key",
+                    env: "NVIDIA_API_KEY",
+                    envOk: llmStatus?.keysFromEnv?.nvidia,
+                    accent: "border-lime-500/25 bg-lime-950/20",
+                    badge: "text-lime-300 bg-lime-950/50 border-lime-800/40",
+                  },
+                  {
+                    key: "groq" as const,
+                    label: "Groq",
+                    hint: "console.groq.com/keys",
+                    env: "GROQ_API_KEY",
+                    envOk: llmStatus?.keysFromEnv?.groq,
+                    accent: "border-orange-500/25 bg-orange-950/20",
+                    badge: "text-orange-300 bg-orange-950/50 border-orange-800/40",
+                  },
+                  {
+                    key: "openrouter" as const,
+                    label: "OpenRouter",
+                    hint: "openrouter.ai/keys",
+                    env: "OPENROUTER_API_KEY",
+                    envOk: llmStatus?.keysFromEnv?.openrouter,
+                    accent: "border-violet-500/25 bg-violet-950/20",
+                    badge: "text-violet-300 bg-violet-950/50 border-violet-800/40",
+                  },
                 ]
               ).map((row) => {
                 const hasBrowserKey = Boolean(llmKeysDraft[row.key]?.trim());
@@ -2030,11 +2057,13 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
-                  setLlmKeysDraft({ gemini: "", nvidia: "", groq: "", openrouter: "" });
+                  if (window.confirm("Очистить все ключи из формы? После нажатия «Сохранить ключи» это удалит их из браузера.")) {
+                    setLlmKeysDraft({ gemini: "", nvidia: "", groq: "", openrouter: "" });
+                  }
                 }}
                 className="px-3 py-2 text-slate-400 hover:text-red-300 text-xs cursor-pointer rounded-lg hover:bg-red-950/20 transition-colors"
               >
-                Очистить поля
+                Очистить все ключи
               </button>
               <div className="flex gap-2">
                 <button
