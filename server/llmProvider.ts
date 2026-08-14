@@ -108,6 +108,9 @@ const DEFAULT_NVIDIA_TIMEOUT_MS = 40_000;
 const DEFAULT_NVIDIA_COOLDOWN_MS = 90_000;
 /** Сколько живых моделей NVIDIA пробовать за один вызов (остальные — только если все в cooldown). */
 const NVIDIA_MAX_MODEL_ATTEMPTS = 3;
+/** В auto NVIDIA — последний резерв; не тратим минуты на каталог моделей после отказов основных провайдеров. */
+const NVIDIA_AUTO_MAX_MODEL_ATTEMPTS = 1;
+const NVIDIA_AUTO_TIMEOUT_MS = 15_000;
 /** Подряд 503 ResourceExhausted → сдаём весь NVIDIA-провайдер, не ждём всю цепочку. */
 const NVIDIA_MAX_CAPACITY_FAILS = 2;
 /**
@@ -807,9 +810,11 @@ async function callNvidiaOnce(
   // Fail-fast: длинные таймауты (60–90 с) × цепочка моделей = минуты «тупняка».
   const baseTimeout = nvidiaRequestTimeoutMs();
   const maxTok = params.maxOutputTokens ?? 8192;
-  const timeoutMs = wantsJson
-    ? Math.min(baseTimeout, 25_000)
-    : Math.min(baseTimeout, 40_000);
+  const timeoutMs = providerPreference() === "auto"
+    ? Math.min(baseTimeout, NVIDIA_AUTO_TIMEOUT_MS)
+    : wantsJson
+      ? Math.min(baseTimeout, 25_000)
+      : Math.min(baseTimeout, 40_000);
 
   const body: Record<string, unknown> = {
     model,
@@ -903,6 +908,8 @@ async function generateViaNvidia(params: LlmGenerateParams): Promise<LlmGenerate
   let skippedCooldown = 0;
   let liveAttempts = 0;
   let capacityFails = 0;
+  const autoMode = providerPreference() === "auto";
+  const maxModelAttempts = autoMode ? NVIDIA_AUTO_MAX_MODEL_ATTEMPTS : NVIDIA_MAX_MODEL_ATTEMPTS;
 
   for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
     const model = models[modelIndex];
@@ -910,9 +917,9 @@ async function generateViaNvidia(params: LlmGenerateParams): Promise<LlmGenerate
       skippedCooldown += 1;
       continue;
     }
-    if (liveAttempts >= NVIDIA_MAX_MODEL_ATTEMPTS) {
+    if (liveAttempts >= maxModelAttempts) {
       console.warn(
-        `NVIDIA: лимит ${NVIDIA_MAX_MODEL_ATTEMPTS} моделей за вызов — сдаём провайдер (дальше auto → Groq/Gemini).`,
+        `NVIDIA: лимит ${maxModelAttempts} моделей за вызов — сдаём провайдер (дальше auto → Groq/Gemini).`,
       );
       break;
     }
@@ -980,6 +987,15 @@ async function generateViaNvidia(params: LlmGenerateParams): Promise<LlmGenerate
             if (status === 503 || status === 429 || status === 408 || status === 502 || status === 504
               || /ResourceExhausted|capacity|timeout|overloaded/i.test(body + String(error?.message || ""))) {
               markNvidiaModelCooldown(model, String(status || "busy"));
+            }
+            // В auto один тайм-аут NVIDIA означает, что повторный запуск сейчас снова
+            // лишь задержит автора. Охлаждаем ключ и отдаём управление сообщению о cooldown.
+            if (autoMode && (status === 408 || /timeout|timed out|AbortError/i.test(body + String(error?.message || "")))) {
+              markKeyCooldown(key, nvidiaCooldownMs(), "nvidia-auto-timeout");
+              const timeoutError = new Error("NVIDIA не ответила вовремя и временно исключена из автоподбора.");
+              (timeoutError as any).status = 503;
+              (timeoutError as any).nvidiaChainTried = [model];
+              throw timeoutError;
             }
             if (status === 503 || /ResourceExhausted|Worker local total request limit|capacity/i.test(body)) {
               capacityFails += 1;
@@ -1414,6 +1430,17 @@ async function generateViaGemini(params: LlmGenerateParams): Promise<LlmGenerate
  * auto: цепочка Gemini → Groq → OpenRouter → NVIDIA.
  * Иначе только выбранный провайдер (свои модели внутри).
  */
+function providerHasReadyKey(provider: LlmProviderId): boolean {
+  const keys = provider === "gemini"
+    ? collectGeminiKeys()
+    : provider === "nvidia"
+      ? collectNvidiaKeys()
+      : provider === "groq"
+        ? collectGroqKeys()
+        : collectOpenrouterKeys();
+  return keys.some((key) => !isKeyOnCooldown(key));
+}
+
 export async function llmGenerate(params: LlmGenerateParams): Promise<LlmGenerateResult> {
   const pref = providerPreference();
   const preferred = resolveProvider(params.model);
@@ -1494,15 +1521,21 @@ export async function llmGenerate(params: LlmGenerateParams): Promise<LlmGenerat
   ]) as LlmProviderId[];
 
   const activeOrder = order.filter((id) => has[id]);
-  llmLog("info", `Авто: ${activeOrder.join(" → ")} (model=${params.model || "—"})`);
-  console.warn(`LLM auto order: ${activeOrder.join(" → ")} (model=${params.model || "—"})`);
+  const readyOrder = activeOrder.filter((id) => providerHasReadyKey(id));
+  if (!readyOrder.length) {
+    throw new Error(
+      "Все настроенные LLM-ключи временно находятся в cooldown из-за квоты или лимита. "
+      + "Подождите окончания лимита и повторите запрос — длинная попытка NVIDIA не будет запущена.",
+    );
+  }
+  llmLog("info", `Авто: ${readyOrder.join(" → ")} (model=${params.model || "—"})`);
+  console.warn(`LLM auto order: ${readyOrder.join(" → ")} (model=${params.model || "—"})`);
 
   let lastError: any = null;
   let networkFailCount = 0; // счётчик сетевых сбоев подряд
-  for (const id of order) {
-    if (!has[id]) continue;
+  for (const id of readyOrder) {
     try {
-      if (id !== order.find((x) => has[x])) {
+      if (id !== readyOrder[0]) {
         llmLog("warn", `Фейловер → ${id}…`, id);
         return await runOne(id, `auto-failover → ${id}…`);
       }

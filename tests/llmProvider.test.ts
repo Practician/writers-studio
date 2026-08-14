@@ -116,6 +116,24 @@ test("nvidia failover errors cover quota and unavailable models", () => {
   assert.equal(isNvidiaModelFailoverError(Object.assign(new Error("gone"), { status: 410 })), true);
 });
 
+test("auto mode stops immediately when every configured key is on cooldown", async () => {
+  const { llmGenerate, markKeyCooldown, runWithLlmRequestContext } = await import("../server/llmProvider");
+  const credentials = {
+    geminiApiKeys: ["gem-cooldown-test"],
+    groqApiKeys: ["groq-cooldown-test"],
+    nvidiaApiKeys: ["nvidia-cooldown-test"],
+    openrouterApiKeys: ["router-cooldown-test"],
+  };
+  Object.values(credentials).flat().forEach((key) => markKeyCooldown(key, 60_000, "test-cooldown"));
+
+  await runWithLlmRequestContext({ preference: "auto", credentials }, async () => {
+    await assert.rejects(
+      () => llmGenerate({ contents: "Не должен выполняться сетевой запрос." }),
+      /в cooldown|квоты|лимита/i,
+    );
+  });
+});
+
 test("NVIDIA account-function 404 is identified as provider-level failure", () => {
   const accountFunctionError = Object.assign(
     new Error("NVIDIA API 404"),
