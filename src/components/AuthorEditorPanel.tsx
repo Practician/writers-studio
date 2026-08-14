@@ -381,20 +381,19 @@ export default function AuthorEditorPanel({
       const firstAi = report.segments.findIndex(isAiSegment);
       setDetectorSegmentIndex(firstAi >= 0 ? firstAi : 0);
       setScope("detector");
-      if (report.fullText === currentDraft) {
-        const learning = learnFromDetectorReport(adaptiveProfile, report);
-        if (learning.duplicate) {
-          setAdaptiveStatus("Этот отчёт уже учтён — повторно профиль не изменён.");
-        } else {
-          saveAdaptiveProfile(learning.profile);
-          setAdaptiveProfile(learning.profile);
-          setAdaptiveStatus(
-            `Самообучение: добавлено HUMAN ${learning.learnedHuman}, AI ${learning.learnedAi}`
-            + (learning.ignored ? `, пропущено коротких/неизвестных ${learning.ignored}` : ""),
-          );
-        }
+      // Калибровка использует метки и тексты сегментов, поэтому безопасна и для
+      // отчёта из DOCX: применение к текущей главе по-прежнему требует точного совпадения.
+      const learning = learnFromDetectorReport(adaptiveProfile, report);
+      if (learning.duplicate) {
+        setAdaptiveStatus("Этот отчёт уже учтён — повторно профиль не изменён.");
       } else {
-        setAdaptiveStatus("Самообучение пропущено: отчёт не совпадает с текущим текстом главы.");
+        saveAdaptiveProfile(learning.profile);
+        setAdaptiveProfile(learning.profile);
+        setAdaptiveStatus(
+          `Самообучение: добавлено HUMAN ${learning.learnedHuman}, AI ${learning.learnedAi}`
+          + (learning.ignored ? `, пропущено коротких/неизвестных ${learning.ignored}` : "")
+          + (report.fullText === currentDraft ? "; сегменты можно безопасно применить к этой главе." : "; калибровка сохранена, но автоприменение к другой редакции заблокировано."),
+        );
       }
     } catch (reportError: any) {
       setDetectorReport(null);
@@ -660,7 +659,7 @@ export default function AuthorEditorPanel({
               ))}
             </select>
             {!reportMatchesChapter && (
-              <p className="text-[10px] text-amber-400">Отчёт не совпадает побуквенно с текущей главой. Сегмент можно проверить, но применение заблокировано.</p>
+              <p className="text-[10px] text-amber-400">Отчёт сохранён для калибровки профиля, но не совпадает побуквенно с текущей главой. Автоприменение сегментов заблокировано; используйте их только для просмотра или импортируйте отчёт из этой же редакции текста.</p>
             )}
             {reportMatchesChapter && (detectorReport.stats.AI_count + detectorReport.stats.LIKELY_AI_count) > 0 && (
               <button

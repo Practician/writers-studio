@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { loadAuthorProfile } from '../lib/authorStorage';
+import { loadAuthorProfile, saveAgentEpisode, saveDeepProfile } from '../lib/authorStorage';
 import { loadOrBuildDeepStyleProfile } from '../lib/authorVoiceProfile';
 import { assessAiTellRisk, DEFAULT_MAX_AI_TELL_SCORE } from '../lib/coauthorQuality';
 import { applyChangeset } from '../lib/coauthorContracts';
@@ -74,6 +74,10 @@ export default function AgentPanel({
   const [result, setResult] = useState<any>(null);
   const [showPreview, setShowPreview] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [styleProfileSnapshot, setStyleProfileSnapshot] = useState<any>(null);
+  const [baseTextAtLaunch, setBaseTextAtLaunch] = useState("");
+  const [learning, setLearning] = useState(false);
+  const [learningStatus, setLearningStatus] = useState("");
 
   const logsEndRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -102,6 +106,8 @@ export default function AgentPanel({
     setEvaluation(null);
     setResult(null);
     setError(null);
+    setLearningStatus("");
+    setBaseTextAtLaunch(currentDraft);
     setCurrentState('planning');
     setIsRunning(true);
 
@@ -132,11 +138,20 @@ export default function AgentPanel({
     }
 
     try {
+      const requestKeys = (llmApiFields as any)?.apiKeys || llmApiFields;
+      const hasUiKey = Object.values(requestKeys || {}).some((value) => typeof value === "string" && value.trim().length > 0);
+      if (!hasUiKey) {
+        const statusResponse = await fetch("/api/llm/status");
+        const status = statusResponse.ok ? await statusResponse.json() : null;
+        const hasServerKey = Boolean(status && (status.geminiKeys > 0 || status.nvidiaConfigured || status.groqConfigured || status.openrouterConfigured));
+        if (!hasServerKey) throw new Error("Генерация не запущена: добавьте ключ Gemini, Groq, NVIDIA или OpenRouter в настройках LLM в шапке приложения.");
+      }
       // Авторский режим не использует устаревший или неполный паспорт: перед стартом
       // поднимается профиль, привязанный к точной ревизии авторского корпуса.
       const profile = await loadAuthorProfile(story.id);
       if (!profile) throw new Error("Сначала создайте и сохраните паспорт автора во вкладке «Автор».");
       const styleProfile = await loadOrBuildDeepStyleProfile(profile, selectedModel, llmProvider, llmApiFields);
+      setStyleProfileSnapshot(styleProfile);
 
       const response = await fetch('/api/agent/start', {
         method: 'POST',
@@ -308,6 +323,63 @@ export default function AgentPanel({
       return;
     }
     onInsertText(applied.text, 'replace');
+  };
+
+  const handleLearnFromEdits = async () => {
+    if (!result?.text || !styleProfileSnapshot) return;
+    const proposed = result.changeset
+      ? applyChangeset(baseTextAtLaunch, result.changeset).text
+      : result.text;
+    if (!currentDraft.trim() || currentDraft === baseTextAtLaunch) {
+      setLearningStatus("Сначала примените вариант, отредактируйте главу под себя и только затем запускайте обучение.");
+      return;
+    }
+    if (proposed === currentDraft) {
+      setLearningStatus("Авторских правок пока нет. Внесите хотя бы одну содержательную правку в главу, затем повторите обучение.");
+      return;
+    }
+    setLearning(true);
+    setLearningStatus("Сохраняю уроки из ваших правок…");
+    try {
+      const response = await fetch(`/api/agent/feedback/${result.taskId || taskId || "local"}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agentDraft: proposed,
+          authorFinal: currentDraft,
+          styleProfile: styleProfileSnapshot,
+          model: selectedModel,
+          llmProvider,
+          apiKeys: (llmApiFields as any)?.apiKeys || llmApiFields,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error || "Не удалось сохранить обучение");
+      const updatedProfile = { ...payload.updatedProfile, sourceHash: styleProfileSnapshot.sourceHash };
+      await saveDeepProfile(story.id, updatedProfile);
+      await saveAgentEpisode({
+        id: `agent-learning-${Date.now()}`,
+        taskType: taskType as any,
+        storyId: story.id,
+        chapterId: activeChapter?.id,
+        timestamp: Date.now(),
+        state: "completed",
+        riskScore: result.riskScore,
+        craftScore: result.craftScore,
+        wordCount: result.wordCount,
+        duration: result.duration || 0,
+        lessonsLearned: payload.lessons || [],
+        agentDraft: proposed,
+        authorFinal: currentDraft,
+        learningProfileVersion: updatedProfile.version,
+      });
+      setStyleProfileSnapshot(updatedProfile);
+      setLearningStatus(`Обучение сохранено: ${payload.lessons?.length || 0} урок(ов) и версия паспорта ${updatedProfile.version}. Следующий запуск использует их.`);
+    } catch (learningError: any) {
+      setLearningStatus(learningError?.message || "Не удалось завершить обучение");
+    } finally {
+      setLearning(false);
+    }
   };
 
   const addLog = (type: LogEntry['type'], content: string, toolName?: string) => {
@@ -698,10 +770,11 @@ export default function AgentPanel({
               Отредактируйте сгенерированный текст в основном редакторе, исправляя стилистику под себя, 
               затем нажмите «Обучить», чтобы агент подстроил свой промпт под ваш стиль.
             </p>
-            <button className="w-full flex items-center justify-center gap-2 rounded-lg px-4 py-2 bg-indigo-600/30 text-indigo-200 hover:bg-indigo-600/50 hover:text-white transition-all border border-indigo-500/50 text-sm mt-1">
+            <button onClick={handleLearnFromEdits} disabled={learning} className="w-full flex items-center justify-center gap-2 rounded-lg px-4 py-2 bg-indigo-600/30 text-indigo-200 hover:bg-indigo-600/50 hover:text-white transition-all border border-indigo-500/50 text-sm mt-1 disabled:opacity-50">
               <GraduationCap className="w-4 h-4" />
-              Обучить на моих правках
+              {learning ? "Сохраняем уроки…" : "Обучить на моих правках"}
             </button>
+            {learningStatus && <p className="text-[11px] leading-relaxed text-indigo-200/80">{learningStatus}</p>}
           </div>
         )}
 

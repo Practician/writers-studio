@@ -160,6 +160,29 @@ export function updateExemplars(profile: DeepStyleProfile, patterns: EditPattern
 /**
  * Основной процесс обучения на основе правок.
  */
+function deterministicPatternsFromDiff(diff: AuthorEditDiff): EditPattern[] {
+    const rules: Record<AuthorEditDiff['categorizedChanges'][number]['type'], string> = {
+        addition: "Автор добавляет конкретные наблюдаемые детали; не заменять их общей оценкой.",
+        deletion: "Автор убирает лишние объяснения и повторы; держать фразу смысловой и точной.",
+        rephrasing: "Автор предпочитает собственную точную формулировку нейтральной литературной гладкости.",
+        restructuring: "Автор меняет порядок фраз ради естественного ритма; не выравнивать синтаксис механически.",
+    };
+    const grouped = new Map<keyof typeof rules, AuthorEditDiff['categorizedChanges']>();
+    for (const change of diff.categorizedChanges) {
+        const bucket = grouped.get(change.type) || [];
+        bucket.push(change);
+        grouped.set(change.type, bucket);
+    }
+    return [...grouped.entries()].map(([type, changes]) => ({
+        type,
+        original: changes[0]?.original || "",
+        edited: changes[0]?.edited || "",
+        inferredReason: rules[type],
+        frequency: changes.length,
+        confidence: 0.72,
+    }));
+}
+
 export async function learnFromEdits(
     agentDraft: string, 
     authorFinal: string, 
@@ -167,14 +190,26 @@ export async function learnFromEdits(
     model: string
 ): Promise<LearningResult> {
     const diff = computeEditDiff(agentDraft, authorFinal);
-    const patterns = await categorizeEdits(diff, model);
+    let patterns: EditPattern[] = [];
+    try {
+        patterns = await categorizeEdits(diff, model);
+    } catch {
+        // Фиксируем авторские предпочтения локально, даже если LLM для объяснения недоступна.
+        patterns = deterministicPatternsFromDiff(diff);
+    }
+    if (!patterns.length && diff.categorizedChanges.length) patterns = deterministicPatternsFromDiff(diff);
     
     // Извлекаем уроки
-    const lessons = patterns
-        .filter(p => p.frequency >= 2 || p.confidence >= 0.7)
-        .map(p => p.inferredReason);
+    const lessons = Array.from(new Set(patterns
+        .filter(p => p.frequency >= 1 || p.confidence >= 0.7)
+        .map(p => p.inferredReason)
+        .filter(Boolean)));
     
     let updatedProfile = updateExemplars(currentProfile, patterns);
+    updatedProfile.learningLessons = Array.from(new Set([
+        ...(currentProfile.learningLessons || []),
+        ...lessons,
+    ])).slice(-20);
     
     // Корректировка количественных метрик, если нужно (упрощенная эвристика)
     let lengthRatio = 1;

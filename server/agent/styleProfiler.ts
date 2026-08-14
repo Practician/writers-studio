@@ -57,6 +57,8 @@ export interface DeepStyleProfile {
   createdAt: string;
   updatedAt: string;
   sampleCharCount: number;
+  /** Уроки из подтверждённых автором правок; используются в следующих запусках. */
+  learningLessons?: string[];
 }
 
 /**
@@ -325,6 +327,12 @@ export function buildStyleInstructionBlock(profile: DeepStyleProfile, authorRule
     for (const rule of authorRules.must) lines.push(`- ОБЯЗАТЕЛЬНО: ${rule}`);
     for (const rule of authorRules.avoid) lines.push(`- НЕ ИСПОЛЬЗОВАТЬ: ${rule}`);
     for (const rule of authorRules.preferences) lines.push(`- ПРЕДПОЧТИТЕЛЬНО: ${rule}`);
+    lines.push("");
+  }
+
+  if (profile.learningLessons?.length) {
+    lines.push("[УРОКИ ИЗ ПОДТВЕРЖДЁННЫХ ПРАВОК АВТОРА]");
+    for (const lesson of profile.learningLessons.slice(-8)) lines.push(`- ${lesson}`);
     lines.push("");
   }
 

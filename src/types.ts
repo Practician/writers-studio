@@ -247,6 +247,11 @@ export interface AgentHistoryEntry {
   wordCount?: number;
   duration: number;
   lessonsLearned: string[];
+  /** Полный предложенный вариант, на котором автор обучил агента. */
+  agentDraft?: string;
+  /** Текст главы после авторской правки. */
+  authorFinal?: string;
+  learningProfileVersion?: number;
 }
 
 export interface CodexTemporalRange {

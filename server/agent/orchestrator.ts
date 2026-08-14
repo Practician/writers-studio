@@ -481,6 +481,7 @@ ${this.extractedContext.lore ? `World Lore: ${this.extractedContext.lore}` : ""}
       customPrompt: customPrompt,
       authorSample: input.authorSample,
       voiceSheet: input.voiceSheet,
+      authorRules: input.authorRules,
       humanizeDepth: config.humanizeDepth,
       adaptiveStyleGuidance: styleInstruction || undefined,
       model: config.model,
