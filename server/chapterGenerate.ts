@@ -29,6 +29,7 @@ import {
   voicePersonaBlock,
   voicePresetById,
 } from "./humanStyle";
+import { sanitizeGeneratedText, type TextHygieneReport } from "./textHygiene";
 
 // Сценовая генерация главы + многопроходная доводка.
 // Не оптимизирует под внешние детекторы — только локальный craft-score и голос автора.
@@ -72,6 +73,7 @@ export interface HumanizePipelineReport {
   candidateScores?: number[];
   chosenCandidate?: number;
   detectorSegmentsRewritten?: number;
+  textHygiene: TextHygieneReport;
 }
 
 export interface ChapterGenerateResult {
@@ -929,10 +931,11 @@ export async function generateHumanizedChapter(
     personaBlock,
     depth,
   });
-  const after = aiTellScore(touchup.text);
+  const hygiene = sanitizeGeneratedText(touchup.text);
+  const after = aiTellScore(hygiene.text);
 
   return {
-    text: touchup.text,
+    text: hygiene.text,
     humanizeReport: {
       scoreBefore: before.score,
       scoreAfter: after.score,
@@ -950,6 +953,7 @@ export async function generateHumanizedChapter(
       candidatesTried: rawCandidates.length,
       candidateScores: rawCandidates.map((c) => c.score.score),
       chosenCandidate: chosen.index,
+      textHygiene: hygiene.report,
     },
   };
 }
@@ -982,12 +986,14 @@ export async function rewriteDetectorAiSegments(
   const before = aiTellScore(originalJoined);
 
   if (!aiIndexes.length) {
+    const hygiene = sanitizeGeneratedText(originalJoined);
+    const after = aiTellScore(hygiene.text);
     return {
-      text: originalJoined,
+      text: hygiene.text,
       rewrittenCount: 0,
       humanizeReport: {
         scoreBefore: before.score,
-        scoreAfter: before.score,
+        scoreAfter: after.score,
         refinedBlocks: 0,
         flaggedLabels: [],
         unresolvedLabels: [],
@@ -1000,6 +1006,7 @@ export async function rewriteDetectorAiSegments(
         depth: depth.id,
         mode: "single",
         detectorSegmentsRewritten: 0,
+        textHygiene: hygiene.report,
       },
     };
   }
@@ -1080,10 +1087,11 @@ export async function rewriteDetectorAiSegments(
       bestOfN: 1,
     },
   });
-  const after = aiTellScore(touchup.text);
+  const hygiene = sanitizeGeneratedText(touchup.text);
+  const after = aiTellScore(hygiene.text);
 
   return {
-    text: touchup.text,
+    text: hygiene.text,
     rewrittenCount,
     humanizeReport: {
       scoreBefore: before.score,
@@ -1100,6 +1108,7 @@ export async function rewriteDetectorAiSegments(
       depth: depth.id,
       mode: "single",
       detectorSegmentsRewritten: rewrittenCount,
+      textHygiene: hygiene.report,
     },
   };
 }
@@ -1126,9 +1135,10 @@ export async function humanizeProseDraft(
       bestOfN: depth.id === "maximum" ? 2 : 1,
     },
   });
-  const after = aiTellScore(touchup.text);
+  const hygiene = sanitizeGeneratedText(touchup.text);
+  const after = aiTellScore(hygiene.text);
   return {
-    text: touchup.text,
+    text: hygiene.text,
     humanizeReport: {
       scoreBefore: before.score,
       scoreAfter: after.score,
@@ -1143,6 +1153,7 @@ export async function humanizeProseDraft(
       scenesGenerated: 0,
       depth: depth.id,
       mode: "single",
+      textHygiene: hygiene.report,
     },
   };
 }

@@ -42,6 +42,7 @@ import {
   type GenerateFn,
 } from "./server/chapterGenerate";
 import microEditRouter from "./server/api/microEdit";
+import { sanitizeGeneratedText } from "./server/textHygiene";
 import {
   getLlmStatus,
   isDailyQuotaExhausted,
@@ -305,7 +306,9 @@ app.post("/api/writer/author", async (req, res) => {
           }
         }
       }
-      const result = reassembleText(revisedBlocks, structure.separators);
+      const rawResult = reassembleText(revisedBlocks, structure.separators);
+      const textHygiene = sanitizeGeneratedText(rawResult);
+      const result = textHygiene.text;
 
       const audit = await generateStructured<AuthorEditAudit>(
         model,
@@ -331,7 +334,7 @@ app.post("/api/writer/author", async (req, res) => {
         audit.passed = false;
       }
 
-      return res.json({ result, voiceSheet, analysis, audit, checks, model });
+      return res.json({ result, voiceSheet, analysis, audit, checks, textHygiene: textHygiene.report, model });
     }
 
     return res.status(400).json({ error: "Неизвестное действие авторского редактора" });
@@ -826,7 +829,7 @@ ${text || ""}
     let reply = llmTextOrThrow(llmResult, "Генерация");
     let humanizeReport: Awaited<ReturnType<typeof humanizeProseDraft>>["humanizeReport"] | null = null;
 
-    if (humanizeEnabled && action === "continue" && reply.length > 200) {
+    if (humanizeEnabled && (action === "continue" || action === "improve") && reply.length > 200) {
       try {
         const polished = await humanizeProseDraft(reply, callGenerate, {
           model: selectedModel,
@@ -838,6 +841,8 @@ ${text || ""}
       } catch (touchupError) {
         console.warn("Авто-доводка continue не удалась:", touchupError);
         const score = aiTellScore(reply);
+        const textHygiene = sanitizeGeneratedText(reply);
+        reply = textHygiene.text;
         humanizeReport = {
           scoreBefore: score.score,
           scoreAfter: score.score,
@@ -852,13 +857,19 @@ ${text || ""}
           scenesGenerated: 0,
           depth: depthConfig.id,
           mode: "single",
+          textHygiene: textHygiene.report,
         };
       }
     }
 
+    const hygieneResult = humanizeReport ? null : sanitizeGeneratedText(reply);
+    const textHygiene = humanizeReport?.textHygiene ?? hygieneResult!.report;
+    if (hygieneResult) reply = hygieneResult.text;
+
     res.json({
       result: reply,
       humanizeReport,
+      textHygiene,
       provider: llmResult.provider,
       model: llmResult.model,
       llmProvider: llmProvider || undefined,

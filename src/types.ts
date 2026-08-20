@@ -120,6 +120,12 @@ export interface HumanizeReport {
   candidateScores?: number[];
   chosenCandidate?: number;
   detectorSegmentsRewritten?: number;
+  textHygiene?: {
+    removedHiddenCharacters: number;
+    normalizedSpaces: number;
+    normalizedLineEndings: boolean;
+    changed: boolean;
+  };
 }
 
 export interface ChatMessage {
