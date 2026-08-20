@@ -55,6 +55,8 @@ import {
   resolveSelectedModel,
   runWithLlmRequestContext,
 } from "./server/llmProvider";
+import { runQualityGate } from "./server/quality";
+import { validateQualityGateRequest } from "./server/quality/validation";
 
 dotenv.config();
 
@@ -118,6 +120,40 @@ async function generateJsonBlocks(
 
 app.get("/api/llm/status", (_req, res) => {
   res.json(getLlmStatus());
+});
+
+// Локальная проверка качества вариантов. Текст не меняется на сервере: API возвращает
+// только рекомендацию, а окончательное применение остаётся действием автора в UI.
+app.post("/api/writer/quality-gate", async (req, res) => {
+  const llmProvider = normalizeProviderPreference(req.body?.llmProvider);
+  const credentials = parseRequestCredentials(req.body?.apiKeys);
+  try {
+    const qualityRequest = validateQualityGateRequest(req.body);
+    await runWithLlmRequestContext({ preference: llmProvider, credentials }, async () => {
+      const result = await runQualityGate(qualityRequest, {
+        generate: async (params) => {
+          const generated = await llmGenerate({
+            model: params.model,
+            systemInstruction: params.systemInstruction,
+            contents: params.contents,
+            temperature: params.temperature,
+            responseMimeType: params.responseMimeType,
+            responseSchema: params.responseSchema,
+            maxOutputTokens: params.maxOutputTokens,
+          });
+          return llmTextOrThrow(generated, "Quality Gate");
+        },
+      });
+      const allBlocked = result.decision === "DISCARD" && result.candidates.every((candidate) => !candidate.guards.passed);
+      return res.status(allBlocked ? 422 : 200).json(result);
+    });
+  } catch (error: any) {
+    console.error("Quality Gate API error:", error);
+    const status = error?.status ?? error?.statusCode;
+    const message = String(error?.message || "Не удалось выполнить проверку качества.");
+    const responseStatus = status === 429 ? 429 : status === 503 ? 503 : /превышен лимит/u.test(message) ? 413 : 400;
+    return res.status(responseStatus).json({ error: message });
+  }
 });
 
 // GET /api/llm/log-stream — SSE-лог событий ротации ключей/провайдеров в реальном времени
@@ -334,7 +370,45 @@ app.post("/api/writer/author", async (req, res) => {
         audit.passed = false;
       }
 
-      return res.json({ result, voiceSheet, analysis, audit, checks, textHygiene: textHygiene.report, model });
+      let qualityGate: unknown;
+      if (req.body?.qualityGate === true) {
+        try {
+          qualityGate = await runQualityGate({
+            requestId: `author-rewrite-${Date.now()}`,
+            sourceText: request.sourceText,
+            candidates: [{ id: "author-rewrite", text: result, origin: "author_rewrite" }],
+            protectedTerms: request.protectedTerms,
+            context: request.context,
+            voiceSheet,
+            analysis,
+            existingAudit: audit,
+            rubricPreset: "author_edit",
+            criticModel: model,
+            judgeModel: model,
+          }, {
+            generate: async (params) => {
+              const generated = await llmGenerate({
+                model: params.model,
+                systemInstruction: params.systemInstruction,
+                contents: params.contents,
+                temperature: params.temperature,
+                responseMimeType: params.responseMimeType,
+                responseSchema: params.responseSchema,
+                maxOutputTokens: params.maxOutputTokens,
+              });
+              return llmTextOrThrow(generated, "Quality Gate");
+            },
+          });
+        } catch (qualityGateError: any) {
+          console.warn("Quality Gate author integration failed:", qualityGateError);
+          qualityGate = {
+            decision: "NEEDS_AUTHOR_REVIEW",
+            summary: "Проверка качества не завершилась надёжно; результат редактора не был применён автоматически.",
+          };
+        }
+      }
+
+      return res.json({ result, voiceSheet, analysis, audit, checks, textHygiene: textHygiene.report, model, ...(qualityGate ? { qualityGate } : {}) });
     }
 
     return res.status(400).json({ error: "Неизвестное действие авторского редактора" });
