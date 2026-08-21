@@ -28,7 +28,8 @@ import {
   Save,
   Settings,
   Cpu,
-  Loader2
+  Loader2,
+  Fingerprint
 } from "lucide-react";
 import { Story, Chapter, Character, WorldRule, TextSelection, AuthorEditTarget } from "./types";
 import { hashText } from "./lib/authorAudit";
@@ -40,7 +41,7 @@ import {
   mergeLabyrinthCanonIntoStories,
   shouldSeedLabyrinthAuthorProfile,
 } from "./data/labyrinthCanon";
-import { loadAuthorProfile, saveAuthorProfile } from "./lib/authorStorage";
+import { loadGlobalAuthorProfile, saveGlobalAuthorProfile } from "./lib/authorStorage";
 import {
   defaultModelForProvider,
   loadLlmKeys,
@@ -55,11 +56,9 @@ import {
 // Боковые панели грузятся лениво: они не нужны при первом рендере редактора,
 // а MuseChat/AIPanel тянут за собой react-markdown со всей remark-экосистемой.
 const MuseChat = React.lazy(() => import("./components/MuseChat"));
-const CharacterManager = React.lazy(() => import("./components/CharacterManager"));
-const WorldBuilder = React.lazy(() => import("./components/WorldBuilder"));
 const AIPanel = React.lazy(() => import("./components/AIPanel"));
-const AgentPanel = React.lazy(() => import("./components/AgentPanel"));
-const CodexPanel = React.lazy(() => import("./components/CodexPanel"));
+const BookPanel = React.lazy(() => import("./components/BookPanel"));
+const AuthorProfileModal = React.lazy(() => import("./components/AuthorProfileModal"));
 
 export default function App() {
   const [stories, setStories] = useState<Story[]>([]);
@@ -67,8 +66,11 @@ export default function App() {
   storiesRef.current = stories;
   const [selectedStoryId, setSelectedStoryId] = useState<string>("");
   const [selectedChapterId, setSelectedChapterId] = useState<string>("");
-  const [activeTab, setActiveTab] = useState<"muse" | "characters" | "world" | "ai" | "agent" | "codex">(() => {
-    return (localStorage.getItem("writers_studio_global_active_tab") as any) || "muse";
+  const [activeTab, setActiveTab] = useState<"text" | "book" | "muse">(() => {
+    const saved = localStorage.getItem("writers_studio_global_active_tab");
+    if (saved === "muse") return "muse";
+    if (saved === "book" || saved === "characters" || saved === "world" || saved === "codex") return "book";
+    return "text";
   });
   const [selectedText, setSelectedText] = useState("");
   const [textSelection, setTextSelection] = useState<TextSelection | null>(null);
@@ -83,6 +85,7 @@ export default function App() {
   const [llmProvider, setLlmProvider] = useState<LlmProviderChoice>(() => loadLlmProvider());
   const [llmKeys, setLlmKeys] = useState<StoredLlmKeys>(() => loadLlmKeys());
   const [showLlmSettings, setShowLlmSettings] = useState(false);
+  const [showAuthorProfile, setShowAuthorProfile] = useState(false);
   const [llmKeysDraft, setLlmKeysDraft] = useState<StoredLlmKeys>(() => loadLlmKeys());
   const [llmStatus, setLlmStatus] = useState<{
     geminiKeys: number;
@@ -289,8 +292,12 @@ export default function App() {
       
       // Restore this specific story's active tab
       const savedStoryTab = localStorage.getItem(`writers_studio_active_tab_${selectedStoryId}`);
-      if (savedStoryTab) {
-        setActiveTab(savedStoryTab as any);
+      if (savedStoryTab === "muse") {
+        setActiveTab("muse");
+      } else if (["book", "characters", "world", "codex"].includes(savedStoryTab || "")) {
+        setActiveTab("book");
+      } else if (savedStoryTab) {
+        setActiveTab("text");
       }
       
       // Restore this specific story's active chapter
@@ -327,10 +334,10 @@ export default function App() {
           (s) => /лабиринт/i.test(s.title || "") && /путь\s*домой/i.test(s.title || ""),
         );
       if (!lab) return;
-      void loadAuthorProfile(lab.id)
+      void loadGlobalAuthorProfile(lab.id)
         .then((existing) => {
           if (!shouldSeedLabyrinthAuthorProfile(existing)) return;
-          return saveAuthorProfile({ ...buildLabyrinthAuthorProfile(), storyId: lab.id });
+          return saveGlobalAuthorProfile(buildLabyrinthAuthorProfile());
         })
         .catch((err) => console.warn("Labyrinth author profile seed skipped", err));
     };
@@ -675,7 +682,7 @@ export default function App() {
     setSelectedChapterId(chapterId);
     setSelectedText("");
     setTextSelection(null);
-    setActiveTab("ai");
+    setActiveTab("text");
     setOpenAuthorRequest((value) => value + 1);
   };
 
@@ -1189,7 +1196,7 @@ export default function App() {
         content: importFileContent
       };
       updatedStory.worldRules = [...updatedStory.worldRules, newRule];
-      setActiveTab("world");
+      setActiveTab("book");
     } else if (importTarget === "character") {
       const newChar: Character = {
         id: "char-" + Math.random().toString(36).substr(2, 9),
@@ -1200,13 +1207,13 @@ export default function App() {
         goals: "Неизвестно"
       };
       updatedStory.characters = [...updatedStory.characters, newChar];
-      setActiveTab("characters");
+      setActiveTab("book");
     } else if (importTarget === "bookPlan") {
       updatedStory.bookPlan = importFileContent;
-      setActiveTab("ai");
+      setActiveTab("text");
     } else if (importTarget === "worldBible") {
       updatedStory.worldBible = importFileContent;
-      setActiveTab("ai");
+      setActiveTab("text");
     }
 
     updatedStory.updatedAt = Date.now();
@@ -1445,6 +1452,17 @@ export default function App() {
             </div>
 
             <button
+              type="button"
+              onClick={() => setShowAuthorProfile(true)}
+              className="p-2 rounded-lg cursor-pointer transition-all flex items-center gap-1.5 text-xs font-medium border bg-emerald-950/25 border-emerald-900/60 text-emerald-300 hover:bg-emerald-950/45 hover:text-emerald-200"
+              title="Открыть единый профиль автора: образец, паспорт голоса и защищённые термины"
+              id="author-profile-open-btn"
+            >
+              <Fingerprint className="w-4 h-4" />
+              <span>Профиль автора</span>
+            </button>
+
+            <button
               onClick={() => setFocusMode(!focusMode)}
               className={`p-2 rounded-lg cursor-pointer transition-all flex items-center gap-1.5 text-xs font-medium border ${
                 focusMode 
@@ -1602,10 +1620,10 @@ export default function App() {
                   <button
                     onClick={() => handleOpenInAuthorEditor(activeChapter.id)}
                     className="px-3 py-1.5 bg-emerald-600/10 hover:bg-emerald-600/20 text-emerald-400 border border-emerald-500/20 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all"
-                    title="Перенести главу в очеловечиватель «Голос автора»"
+                    title="Открыть бережную редактуру с голосом автора"
                   >
                     <Wand2 className="w-3.5 h-3.5" />
-                    <span>В Голос автора</span>
+                    <span>В бережную редактуру</span>
                   </button>
                   {/* Words metric tag */}
                   <div className={`px-2.5 py-1 rounded-lg text-[10px] font-mono border ${
@@ -1729,7 +1747,7 @@ export default function App() {
                   </div>
                   <button
                     onClick={() => {
-                      setActiveTab("ai");
+                      setActiveTab("text");
                       // Switch focus to AI continuation
                       setTimeout(() => {
                         const btn = document.getElementById("ai-action-btn");
@@ -1758,12 +1776,34 @@ export default function App() {
           )}
         </main>
 
-        {/* Right Section: The AI Assistant Suite (Conditionally Hidden in Focus Mode) */}
+        {/* Правая панель строится вокруг задач автора, а не отдельных ИИ-движков. */}
         {!focusMode && activeStory && (
           <aside className="w-96 bg-[#0e1424]/60 border-l border-slate-800/80 flex flex-col shrink-0" id="assistant-panel">
-            {/* Tabs Controller Header */}
             <div className="flex border-b border-slate-800/80 bg-slate-950/50 p-1 gap-1 shrink-0 text-xs font-semibold">
               <button
+                type="button"
+                onClick={() => setActiveTab("text")}
+                className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center ${
+                  activeTab === "text"
+                    ? "bg-slate-800 text-slate-100 font-bold border border-slate-700/50"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                Текст
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab("book")}
+                className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center ${
+                  activeTab === "book"
+                    ? "bg-slate-800 text-slate-100 font-bold border border-slate-700/50"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                Книга
+              </button>
+              <button
+                type="button"
                 onClick={() => setActiveTab("muse")}
                 className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center ${
                   activeTab === "muse"
@@ -1771,125 +1811,64 @@ export default function App() {
                     : "text-slate-400 hover:text-slate-200"
                 }`}
               >
-                🔮 Муза
-              </button>
-              <button
-                onClick={() => setActiveTab("characters")}
-                className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center ${
-                  activeTab === "characters"
-                    ? "bg-slate-800 text-slate-100 font-bold border border-slate-700/50"
-                    : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                👥 Персонажи
-              </button>
-              <button
-                onClick={() => setActiveTab("world")}
-                className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center ${
-                  activeTab === "world"
-                    ? "bg-slate-800 text-slate-100 font-bold border border-slate-700/50"
-                    : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                🌍 Лор
-              </button>
-              <button
-                onClick={() => setActiveTab("ai")}
-                className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center ${
-                  activeTab === "ai"
-                    ? "bg-slate-800 text-slate-100 font-bold border border-slate-700/50"
-                    : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                ✨ ИИ-Помощник
-              </button>
-              <button
-                onClick={() => setActiveTab("agent")}
-                className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center ${
-                  activeTab === "agent"
-                    ? "bg-slate-800 text-slate-100 font-bold border border-slate-700/50"
-                    : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                🤖 Агент
-              </button>
-              <button
-                onClick={() => setActiveTab("codex")}
-                className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center ${
-                  activeTab === "codex"
-                    ? "bg-slate-800 text-slate-100 font-bold border border-slate-700/50"
-                    : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                📚 Кодекс
+                Муза
               </button>
             </div>
 
-            {/* Scrollable Tab Views */}
             <div className="flex-1 overflow-hidden p-4">
               <React.Suspense fallback={<div className="text-slate-500 text-sm p-4">Загрузка…</div>}>
-              {activeTab === "muse" && (
-                <MuseChat
-                  story={activeStory}
-                  currentDraft={activeChapter?.content || ""}
-                  selectedModel={selectedModel}
-                  llmProvider={llmProvider}
-                  llmApiFields={llmApiFields}
-                />
-              )}
-              {activeTab === "characters" && (
-                <CharacterManager 
-                  story={activeStory} 
-                  onUpdateCharacters={handleUpdateCharacters} 
-                  selectedModel={selectedModel}
-                  llmProvider={llmProvider}
-                  llmApiFields={llmApiFields}
-                />
-              )}
-              {activeTab === "world" && (
-                <WorldBuilder 
-                  story={activeStory} 
-                  onUpdateWorldRules={handleUpdateWorldRules} 
-                  selectedModel={selectedModel}
-                  llmProvider={llmProvider}
-                  llmApiFields={llmApiFields}
-                />
-              )}
-              {activeTab === "ai" && (
-                <AIPanel 
-                  story={activeStory} 
-                  currentDraft={activeChapter?.content || ""} 
-                  selectedText={selectedText}
-                  textSelection={textSelection}
-                  onInsertText={handleInsertText}
-                  onApplyAuthorEdit={handleApplyAuthorEdit}
-                  activeChapter={activeChapter}
-                  onUpdateStoryChapters={handleUpdateStoryChapters}
-                  selectedModel={selectedModel}
-                  llmProvider={llmProvider}
-                  llmApiFields={llmApiFields}
-                  openAuthorRequest={openAuthorRequest}
-                />
-              )}
-              {activeTab === "agent" && (
-                <AgentPanel
-                  story={activeStory}
-                  currentDraft={activeChapter?.content || ""}
-                  activeChapter={activeChapter}
-                  selectedModel={selectedModel}
-                  llmProvider={llmProvider}
-                  llmApiFields={llmApiFields}
-                  onInsertText={handleInsertText}
-                />
-              )}
-              {activeTab === "codex" && (
-                <CodexPanel story={activeStory} />
-              )}
+                {activeTab === "text" && (
+                  <AIPanel
+                    story={activeStory}
+                    currentDraft={activeChapter?.content || ""}
+                    selectedText={selectedText}
+                    textSelection={textSelection}
+                    onInsertText={handleInsertText}
+                    onApplyAuthorEdit={handleApplyAuthorEdit}
+                    activeChapter={activeChapter}
+                    onUpdateStoryChapters={handleUpdateStoryChapters}
+                    selectedModel={selectedModel}
+                    llmProvider={llmProvider}
+                    llmApiFields={llmApiFields}
+                    openAuthorRequest={openAuthorRequest}
+                    onOpenAuthorProfile={() => setShowAuthorProfile(true)}
+                  />
+                )}
+                {activeTab === "book" && (
+                  <BookPanel
+                    story={activeStory}
+                    onUpdateCharacters={handleUpdateCharacters}
+                    onUpdateWorldRules={handleUpdateWorldRules}
+                    selectedModel={selectedModel}
+                    llmProvider={llmProvider}
+                    llmApiFields={llmApiFields}
+                  />
+                )}
+                {activeTab === "muse" && (
+                  <MuseChat
+                    story={activeStory}
+                    currentDraft={activeChapter?.content || ""}
+                    selectedModel={selectedModel}
+                    llmProvider={llmProvider}
+                    llmApiFields={llmApiFields}
+                  />
+                )}
               </React.Suspense>
             </div>
           </aside>
         )}
       </div>
+
+      <React.Suspense fallback={null}>
+        <AuthorProfileModal
+          open={showAuthorProfile}
+          onClose={() => setShowAuthorProfile(false)}
+          fallbackStoryId={activeStory?.id}
+          selectedModel={selectedModel}
+          llmProvider={llmProvider}
+          llmApiFields={llmApiFields}
+        />
+      </React.Suspense>
 
       {/* LLM API keys settings */}
       {showLlmSettings && (

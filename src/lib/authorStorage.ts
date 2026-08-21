@@ -7,6 +7,7 @@ const REVISIONS = "revisions";
 const AGENT_EPISODES = "agent_episodes";
 const DEEP_PROFILES = "deep_profiles";
 const PROJECT_CODEX = "project_codex";
+export const GLOBAL_AUTHOR_PROFILE_ID = "__global_author_profile__";
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -55,51 +56,83 @@ function requestResult<T>(request: IDBRequest<T>): Promise<T> {
 
 const PROFILE_UPDATED_EVENT = "writers-studio-author-profile-updated";
 
-/** Уведомить другие панели (ИИ-Помощник), что образец/паспорт изменился. */
-export function notifyAuthorProfileUpdated(storyId: string): void {
+/** Уведомить все редакторские поверхности, что единый голос автора изменился. */
+export function notifyAuthorProfileUpdated(profileId = GLOBAL_AUTHOR_PROFILE_ID): void {
   if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent(PROFILE_UPDATED_EVENT, { detail: { storyId } }));
+  window.dispatchEvent(new CustomEvent(PROFILE_UPDATED_EVENT, { detail: { profileId } }));
 }
 
-export function onAuthorProfileUpdated(handler: (storyId: string) => void): () => void {
+export function onAuthorProfileUpdated(handler: () => void): () => void {
   if (typeof window === "undefined") return () => {};
-  const listener = (event: Event) => {
-    const storyId = (event as CustomEvent<{ storyId?: string }>).detail?.storyId;
-    if (storyId) handler(storyId);
-  };
+  const listener = () => handler();
   window.addEventListener(PROFILE_UPDATED_EVENT, listener);
   return () => window.removeEventListener(PROFILE_UPDATED_EVENT, listener);
 }
 
-export async function loadAuthorProfile(storyId: string): Promise<AuthorProfileRecord | undefined> {
+async function readProfile(profileId: string): Promise<AuthorProfileRecord | undefined> {
   const database = await openDatabase();
   try {
     const transaction = database.transaction(PROFILES, "readonly");
-    return await requestResult(transaction.objectStore(PROFILES).get(storyId));
+    return await requestResult(transaction.objectStore(PROFILES).get(profileId));
   } finally {
     database.close();
   }
 }
 
-export async function saveAuthorProfile(profile: AuthorProfileRecord): Promise<void> {
+/**
+ * Единый паспорт принадлежит автору, а не отдельной книге. Если глобального
+ * профиля ещё нет, первый открытый профиль старой книги переносится сюда.
+ */
+export async function loadGlobalAuthorProfile(fallbackStoryId?: string): Promise<AuthorProfileRecord | undefined> {
+  const global = await readProfile(GLOBAL_AUTHOR_PROFILE_ID);
+  if (global || !fallbackStoryId || fallbackStoryId === GLOBAL_AUTHOR_PROFILE_ID) return global;
+
+  const legacy = await readProfile(fallbackStoryId);
+  if (!legacy) return undefined;
+
+  const migrated = { ...legacy, storyId: GLOBAL_AUTHOR_PROFILE_ID, updatedAt: Date.now() };
+  await saveGlobalAuthorProfile(migrated);
+  return migrated;
+}
+
+export async function saveGlobalAuthorProfile(profile: Omit<AuthorProfileRecord, "storyId"> | AuthorProfileRecord): Promise<void> {
   const database = await openDatabase();
   try {
     const transaction = database.transaction(PROFILES, "readwrite");
-    await requestResult(transaction.objectStore(PROFILES).put(profile));
+    await requestResult(transaction.objectStore(PROFILES).put({ ...profile, storyId: GLOBAL_AUTHOR_PROFILE_ID }));
   } finally {
     database.close();
   }
-  notifyAuthorProfileUpdated(profile.storyId);
+  notifyAuthorProfileUpdated();
 }
 
-export async function deleteAuthorProfile(storyId: string): Promise<void> {
+export async function deleteGlobalAuthorProfile(): Promise<void> {
   const db = await openDatabase();
-  await new Promise<void>((resolve, reject) => {
-    const request = db.transaction(PROFILES, "readwrite").objectStore(PROFILES).delete(storyId);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
-  notifyAuthorProfileUpdated(storyId);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const request = db.transaction(PROFILES, "readwrite").objectStore(PROFILES).delete(GLOBAL_AUTHOR_PROFILE_ID);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  } finally {
+    db.close();
+  }
+  notifyAuthorProfileUpdated();
+}
+
+/** Совместимость со старыми потребителями: все они теперь читают единый профиль. */
+export async function loadAuthorProfile(storyId: string): Promise<AuthorProfileRecord | undefined> {
+  return loadGlobalAuthorProfile(storyId);
+}
+
+/** Совместимость со старыми потребителями: запись всегда становится глобальной. */
+export async function saveAuthorProfile(profile: AuthorProfileRecord): Promise<void> {
+  return saveGlobalAuthorProfile(profile);
+}
+
+/** Совместимость со старыми потребителями: удаляется единый профиль автора. */
+export async function deleteAuthorProfile(_storyId: string): Promise<void> {
+  return deleteGlobalAuthorProfile();
 }
 
 export async function saveAuthorRevision(revision: AuthorRevisionRecord): Promise<void> {

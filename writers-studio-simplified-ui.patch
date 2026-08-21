@@ -1,0 +1,1699 @@
+[1mdiff --git a/server.ts b/server.ts[m
+[1mindex 860dc99..124b778 100644[m
+[1m--- a/server.ts[m
+[1m+++ b/server.ts[m
+[36m@@ -393,6 +393,7 @@[m [mapp.post("/api/writer/ai", async (req, res) => {[m
+     chapterCandidates,[m
+     detectorSegments,[m
+     adaptiveStyleGuidance,[m
+[32m+[m[32m    editorialBrief,[m
+     llmProvider: llmProviderRaw,[m
+     apiKeys,[m
+   } = req.body;[m
+[36m@@ -456,6 +457,47 @@[m [m${text || ""}[m
+ [m
+ Provide ONLY the revised text. Do not provide any commentary, headers, or "before/after" comparisons. Just output the refined passage itself.`;[m
+ [m
+[32m+[m[32m    } else if (action === "editorial_review") {[m
+[32m+[m[32m      systemInstruction = "Вы — внимательный литературный редактор. Вы составляете краткий, доказательный отчёт по предоставленной главе. Не переписывайте текст и не выдумывайте факты: указывайте только наблюдаемые риски, связанные с текстом, каноном и брифом автора.";[m
+[32m+[m[32m      prompt = `Подготовьте внутреннее редакторское письмо к текущей главе на русском языке.[m
+[32m+[m
+[32m+[m[32mКНИГА:[m
+[32m+[m[32m- Название: «${title || "Без названия"}»[m
+[32m+[m[32m- Жанр: ${genre || "Не указан"}[m
+[32m+[m[32m- Описание: ${description || "Не указано"}[m
+[32m+[m
+[32m+[m[32mТЕКУЩАЯ ГЛАВА:[m
+[32m+[m[32m- Название: ${req.body.currentChapterTitle || "Без названия"}[m
+[32m+[m[32m- Синопсис: ${req.body.currentChapterSummary || "Не задан"}[m
+[32m+[m
+[32m+[m[32mТЕКСТ ГЛАВЫ:[m
+[32m+[m[32m"""[m
+[32m+[m[32m${text || ""}[m
+[32m+[m[32m"""[m
+[32m+[m
+[32m+[m[32m${req.body.previousChapter ? `ПРЕДЫДУЩАЯ ГЛАВА:\n"""\n${req.body.previousChapter}\n"""` : "ПРЕДЫДУЩАЯ ГЛАВА: нет — это начало книги или контекст не заполнен."}[m
+[32m+[m
+[32m+[m[32m${req.body.canonDossier ? `ЗАМОК КАНОНА:\n"""\n${req.body.canonDossier}\n"""` : "ЗАМОК КАНОНА: не сформирован."}[m
+[32m+[m
+[32m+[m[32m${worldBible ? `БИБЛИЯ МИРА:\n"""\n${worldBible}\n"""` : "БИБЛИЯ МИРА: не заполнена."}[m
+[32m+[m
+[32m+[m[32m${bookPlan ? `ПЛАН КНИГИ:\n"""\n${bookPlan}\n"""` : "ПЛАН КНИГИ: не заполнен."}[m
+[32m+[m
+[32m+[m[32mРЕДАКТОРСКИЙ БРИФ АВТОРА:[m
+[32m+[m[32m- Цель сцены: ${editorialBrief?.goal || "не указана"}[m
+[32m+[m[32m- Изменение к финалу: ${editorialBrief?.change || "не указано"}[m
+[32m+[m[32m- Эмоциональный поворот: ${editorialBrief?.emotion || "не указан"}[m
+[32m+[m[32m- Нельзя менять: ${editorialBrief?.protectedFacts || "не указано"}[m
+[32m+[m[32m- Нужный эффект: ${editorialBrief?.effect || "не указан"}[m
+[32m+[m
+[32m+[m[32mТребования к отчёту:[m
+[32m+[m[32m1. Готовность должна быть одной краткой формулировкой (например, «Глава готова к бережной редактуре»), без обещаний публикационного качества.[m
+[32m+[m[32m2. Summary — 2–4 предложения: что в сцене работает и на чём основан вывод.[m
+[32m+[m[32m3. Checks — от 3 до 6 конкретных проверок по сюжету, канону, цели сцены, эмоциональной дуге, фокусу и голосу. Для статуса используйте только: ok, attention, missing.[m
+[32m+[m[32m4. Risks — только реальные, проверяемые вручную зоны риска. Если оснований нет, верните пустой массив. Не называйте риск, если текст и контекст не позволяют его подтвердить.[m
+[32m+[m[32m5. Для каждого риска дайте короткое действие автора; не переписывайте фрагменты и не выдавайте сам текст главы.[m
+[32m+[m[32m6. NextStep — одно конкретное следующее действие автора.[m
+[32m+[m[32m7. Не используйте Markdown, ссылки, эмодзи, оценочные обещания и скрытые рассуждения.`;[m
+     } else if (action === "brainstorm") {[m
+       systemInstruction = "You are a brilliant literary consultant and creative brainstorming partner. You generate rich, evocative, original ideas.";[m
+       prompt = `Generate a set of 4-5 inspiring, creative, and non-cliché ideas for a story.[m
+[36m@@ -646,7 +688,43 @@[m [m${text || ""}[m
+     let responseMimeType: string | undefined = undefined;[m
+     let responseSchema: any = undefined;[m
+ [m
+[31m-    if (action === "parse_import") {[m
+[32m+[m[32m    if (action === "editorial_review") {[m
+[32m+[m[32m      responseMimeType = "application/json";[m
+[32m+[m[32m      responseSchema = {[m
+[32m+[m[32m        type: Type.OBJECT,[m
+[32m+[m[32m        properties: {[m
+[32m+[m[32m          readiness: { type: Type.STRING, description: "Краткий статус готовности главы" },[m
+[32m+[m[32m          summary: { type: Type.STRING, description: "Краткое доказательное редакторское резюме" },[m
+[32m+[m[32m          checks: {[m
+[32m+[m[32m            type: Type.ARRAY,[m
+[32m+[m[32m            items: {[m
+[32m+[m[32m              type: Type.OBJECT,[m
+[32m+[m[32m              properties: {[m
+[32m+[m[32m                title: { type: Type.STRING },[m
+[32m+[m[32m                status: { type: Type.STRING, description: "Только ok, attention или missing" },[m
+[32m+[m[32m                note: { type: Type.STRING },[m
+[32m+[m[32m              },[m
+[32m+[m[32m              required: ["title", "status", "note"],[m
+[32m+[m[32m            },[m
+[32m+[m[32m          },[m
+[32m+[m[32m          risks: {[m
+[32m+[m[32m            type: Type.ARRAY,[m
+[32m+[m[32m            items: {[m
+[32m+[m[32m              type: Type.OBJECT,[m
+[32m+[m[32m              properties: {[m
+[32m+[m[32m                level: { type: Type.STRING, description: "Только high, medium или low" },[m
+[32m+[m[32m                title: { type: Type.STRING },[m
+[32m+[m[32m                explanation: { type: Type.STRING },[m
+[32m+[m[32m                suggestion: { type: Type.STRING },[m
+[32m+[m[32m              },[m
+[32m+[m[32m              required: ["level", "title", "explanation", "suggestion"],[m
+[32m+[m[32m            },[m
+[32m+[m[32m          },[m
+[32m+[m[32m          nextStep: { type: Type.STRING },[m
+[32m+[m[32m        },[m
+[32m+[m[32m        required: ["readiness", "summary", "checks", "risks", "nextStep"],[m
+[32m+[m[32m      };[m
+[32m+[m[32m    } else if (action === "parse_import") {[m
+       responseMimeType = "application/json";[m
+       responseSchema = {[m
+         type: Type.OBJECT,[m
+[36m@@ -827,6 +905,44 @@[m [m${text || ""}[m
+     });[m
+ [m
+     let reply = llmTextOrThrow(llmResult, "Генерация");[m
+[32m+[m
+[32m+[m[32m    if (action === "editorial_review") {[m
+[32m+[m[32m      let review: any;[m
+[32m+[m[32m      try {[m
+[32m+[m[32m        review = JSON.parse(reply);[m
+[32m+[m[32m      } catch {[m
+[32m+[m[32m        throw new Error("Редакторская проверка вернула некорректный отчёт. Попробуйте ещё раз.");[m
+[32m+[m[32m      }[m
+[32m+[m[32m      if (!review || typeof review.summary !== "string" || !Array.isArray(review.checks) || !Array.isArray(review.risks)) {[m
+[32m+[m[32m        throw new Error("Редакторская проверка вернула неполный отчёт. Попробуйте ещё раз.");[m
+[32m+[m[32m      }[m
+[32m+[m[32m      const allowedStatuses = new Set(["ok", "attention", "missing"]);[m
+[32m+[m[32m      const allowedLevels = new Set(["high", "medium", "low"]);[m
+[32m+[m[32m      review.checks = review.checks.slice(0, 6).map((check: any) => ({[m
+[32m+[m[32m        title: String(check?.title || "Проверка"),[m
+[32m+[m[32m        status: allowedStatuses.has(check?.status) ? check.status : "attention",[m
+[32m+[m[32m        note: String(check?.note || "Требуется просмотр автора."),[m
+[32m+[m[32m      }));[m
+[32m+[m[32m      review.risks = review.risks.slice(0, 4).map((risk: any) => ({[m
+[32m+[m[32m        level: allowedLevels.has(risk?.level) ? risk.level : "low",[m
+[32m+[m[32m        title: String(risk?.title || "Зона ручной проверки"),[m
+[32m+[m[32m        explanation: String(risk?.explanation || "Нужен внимательный просмотр автора."),[m
+[32m+[m[32m        suggestion: String(risk?.suggestion || "Сверьте этот фрагмент с замыслом главы."),[m
+[32m+[m[32m      }));[m
+[32m+[m[32m      return res.json({[m
+[32m+[m[32m        review: {[m
+[32m+[m[32m          readiness: String(review.readiness || "Редакторская проверка завершена"),[m
+[32m+[m[32m          summary: review.summary,[m
+[32m+[m[32m          checks: review.checks,[m
+[32m+[m[32m          risks: review.risks,[m
+[32m+[m[32m          nextStep: String(review.nextStep || "Просмотрите отмеченные места и при необходимости запустите безопасную редактуру."),[m
+[32m+[m[32m        },[m
+[32m+[m[32m        provider: llmResult.provider,[m
+[32m+[m[32m        model: llmResult.model,[m
+[32m+[m[32m        llmProvider: llmProvider || undefined,[m
+[32m+[m[32m      });[m
+[32m+[m[32m    }[m
+[32m+[m
+     let humanizeReport: Awaited<ReturnType<typeof humanizeProseDraft>>["humanizeReport"] | null = null;[m
+ [m
+     if (humanizeEnabled && (action === "continue" || action === "improve") && reply.length > 200) {[m
+[1mdiff --git a/src/App.tsx b/src/App.tsx[m
+[1mindex 29ada10..8d1809c 100644[m
+[1m--- a/src/App.tsx[m
+[1m+++ b/src/App.tsx[m
+[36m@@ -28,7 +28,8 @@[m [mimport {[m
+   Save,[m
+   Settings,[m
+   Cpu,[m
+[31m-  Loader2[m
+[32m+[m[32m  Loader2,[m
+[32m+[m[32m  Fingerprint[m
+ } from "lucide-react";[m
+ import { Story, Chapter, Character, WorldRule, TextSelection, AuthorEditTarget } from "./types";[m
+ import { hashText } from "./lib/authorAudit";[m
+[36m@@ -40,7 +41,7 @@[m [mimport {[m
+   mergeLabyrinthCanonIntoStories,[m
+   shouldSeedLabyrinthAuthorProfile,[m
+ } from "./data/labyrinthCanon";[m
+[31m-import { loadAuthorProfile, saveAuthorProfile } from "./lib/authorStorage";[m
+[32m+[m[32mimport { loadGlobalAuthorProfile, saveGlobalAuthorProfile } from "./lib/authorStorage";[m
+ import {[m
+   defaultModelForProvider,[m
+   loadLlmKeys,[m
+[36m@@ -55,11 +56,9 @@[m [mimport {[m
+ // Боковые панели грузятся лениво: они не нужны при первом рендере редактора,[m
+ // а MuseChat/AIPanel тянут за собой react-markdown со всей remark-экосистемой.[m
+ const MuseChat = React.lazy(() => import("./components/MuseChat"));[m
+[31m-const CharacterManager = React.lazy(() => import("./components/CharacterManager"));[m
+[31m-const WorldBuilder = React.lazy(() => import("./components/WorldBuilder"));[m
+ const AIPanel = React.lazy(() => import("./components/AIPanel"));[m
+[31m-const AgentPanel = React.lazy(() => import("./components/AgentPanel"));[m
+[31m-const CodexPanel = React.lazy(() => import("./components/CodexPanel"));[m
+[32m+[m[32mconst BookPanel = React.lazy(() => import("./components/BookPanel"));[m
+[32m+[m[32mconst AuthorProfileModal = React.lazy(() => import("./components/AuthorProfileModal"));[m
+ [m
+ export default function App() {[m
+   const [stories, setStories] = useState<Story[]>([]);[m
+[36m@@ -67,8 +66,11 @@[m [mexport default function App() {[m
+   storiesRef.current = stories;[m
+   const [selectedStoryId, setSelectedStoryId] = useState<string>("");[m
+   const [selectedChapterId, setSelectedChapterId] = useState<string>("");[m
+[31m-  const [activeTab, setActiveTab] = useState<"muse" | "characters" | "world" | "ai" | "agent" | "codex">(() => {[m
+[31m-    return (localStorage.getItem("writers_studio_global_active_tab") as any) || "muse";[m
+[32m+[m[32m  const [activeTab, setActiveTab] = useState<"text" | "book" | "muse">(() => {[m
+[32m+[m[32m    const saved = localStorage.getItem("writers_studio_global_active_tab");[m
+[32m+[m[32m    if (saved === "muse") return "muse";[m
+[32m+[m[32m    if (saved === "book" || saved === "characters" || saved === "world" || saved === "codex") return "book";[m
+[32m+[m[32m    return "text";[m
+   });[m
+   const [selectedText, setSelectedText] = useState("");[m
+   const [textSelection, setTextSelection] = useState<TextSelection | null>(null);[m
+[36m@@ -83,6 +85,7 @@[m [mexport default function App() {[m
+   const [llmProvider, setLlmProvider] = useState<LlmProviderChoice>(() => loadLlmProvider());[m
+   const [llmKeys, setLlmKeys] = useState<StoredLlmKeys>(() => loadLlmKeys());[m
+   const [showLlmSettings, setShowLlmSettings] = useState(false);[m
+[32m+[m[32m  const [showAuthorProfile, setShowAuthorProfile] = useState(false);[m
+   const [llmKeysDraft, setLlmKeysDraft] = useState<StoredLlmKeys>(() => loadLlmKeys());[m
+   const [llmStatus, setLlmStatus] = useState<{[m
+     geminiKeys: number;[m
+[36m@@ -289,8 +292,12 @@[m [mexport default function App() {[m
+       [m
+       // Restore this specific story's active tab[m
+       const savedStoryTab = localStorage.getItem(`writers_studio_active_tab_${selectedStoryId}`);[m
+[31m-      if (savedStoryTab) {[m
+[31m-        setActiveTab(savedStoryTab as any);[m
+[32m+[m[32m      if (savedStoryTab === "muse") {[m
+[32m+[m[32m        setActiveTab("muse");[m
+[32m+[m[32m      } else if (["book", "characters", "world", "codex"].includes(savedStoryTab || "")) {[m
+[32m+[m[32m        setActiveTab("book");[m
+[32m+[m[32m      } else if (savedStoryTab) {[m
+[32m+[m[32m        setActiveTab("text");[m
+       }[m
+       [m
+       // Restore this specific story's active chapter[m
+[36m@@ -327,10 +334,10 @@[m [mexport default function App() {[m
+           (s) => /лабиринт/i.test(s.title || "") && /путь\s*домой/i.test(s.title || ""),[m
+         );[m
+       if (!lab) return;[m
+[31m-      void loadAuthorProfile(lab.id)[m
+[32m+[m[32m      void loadGlobalAuthorProfile(lab.id)[m
+         .then((existing) => {[m
+           if (!shouldSeedLabyrinthAuthorProfile(existing)) return;[m
+[31m-          return saveAuthorProfile({ ...buildLabyrinthAuthorProfile(), storyId: lab.id });[m
+[32m+[m[32m          return saveGlobalAuthorProfile(buildLabyrinthAuthorProfile());[m
+         })[m
+         .catch((err) => console.warn("Labyrinth author profile seed skipped", err));[m
+     };[m
+[36m@@ -675,7 +682,7 @@[m [mexport default function App() {[m
+     setSelectedChapterId(chapterId);[m
+     setSelectedText("");[m
+     setTextSelection(null);[m
+[31m-    setActiveTab("ai");[m
+[32m+[m[32m    setActiveTab("text");[m
+     setOpenAuthorRequest((value) => value + 1);[m
+   };[m
+ [m
+[36m@@ -1189,7 +1196,7 @@[m [mexport default function App() {[m
+         content: importFileContent[m
+       };[m
+       updatedStory.worldRules = [...updatedStory.worldRules, newRule];[m
+[31m-      setActiveTab("world");[m
+[32m+[m[32m      setActiveTab("book");[m
+     } else if (importTarget === "character") {[m
+       const newChar: Character = {[m
+         id: "char-" + Math.random().toString(36).substr(2, 9),[m
+[36m@@ -1200,13 +1207,13 @@[m [mexport default function App() {[m
+         goals: "Неизвестно"[m
+       };[m
+       updatedStory.characters = [...updatedStory.characters, newChar];[m
+[31m-      setActiveTab("characters");[m
+[32m+[m[32m      setActiveTab("book");[m
+     } else if (importTarget === "bookPlan") {[m
+       updatedStory.bookPlan = importFileContent;[m
+[31m-      setActiveTab("ai");[m
+[32m+[m[32m      setActiveTab("text");[m
+     } else if (importTarget === "worldBible") {[m
+       updatedStory.worldBible = importFileContent;[m
+[31m-      setActiveTab("ai");[m
+[32m+[m[32m      setActiveTab("text");[m
+     }[m
+ [m
+     updatedStory.updatedAt = Date.now();[m
+[36m@@ -1444,6 +1451,17 @@[m [mexport default function App() {[m
+               })}[m
+             </div>[m
+ [m
+[32m+[m[32m            <button[m
+[32m+[m[32m              type="button"[m
+[32m+[m[32m              onClick={() => setShowAuthorProfile(true)}[m
+[32m+[m[32m              className="p-2 rounded-lg cursor-pointer transition-all flex items-center gap-1.5 text-xs font-medium border bg-emerald-950/25 border-emerald-900/60 text-emerald-300 hover:bg-emerald-950/45 hover:text-emerald-200"[m
+[32m+[m[32m              title="Открыть единый профиль автора: образец, паспорт голоса и защищённые термины"[m
+[32m+[m[32m              id="author-profile-open-btn"[m
+[32m+[m[32m            >[m
+[32m+[m[32m              <Fingerprint className="w-4 h-4" />[m
+[32m+[m[32m              <span>Профиль автора</span>[m
+[32m+[m[32m            </button>[m
+[32m+[m
+             <button[m
+               onClick={() => setFocusMode(!focusMode)}[m
+               className={`p-2 rounded-lg cursor-pointer transition-all flex items-center gap-1.5 text-xs font-medium border ${[m
+[36m@@ -1602,10 +1620,10 @@[m [mexport default function App() {[m
+                   <button[m
+                     onClick={() => handleOpenInAuthorEditor(activeChapter.id)}[m
+                     className="px-3 py-1.5 bg-emerald-600/10 hover:bg-emerald-600/20 text-emerald-400 border border-emerald-500/20 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all"[m
+[31m-                    title="Перенести главу в очеловечиватель «Голос автора»"[m
+[32m+[m[32m                    title="Открыть бережную редактуру с голосом автора"[m
+                   >[m
+                     <Wand2 className="w-3.5 h-3.5" />[m
+[31m-                    <span>В Голос автора</span>[m
+[32m+[m[32m                    <span>В бережную редактуру</span>[m
+                   </button>[m
+                   {/* Words metric tag */}[m
+                   <div className={`px-2.5 py-1 rounded-lg text-[10px] font-mono border ${[m
+[36m@@ -1729,7 +1747,7 @@[m [mexport default function App() {[m
+                   </div>[m
+                   <button[m
+                     onClick={() => {[m
+[31m-                      setActiveTab("ai");[m
+[32m+[m[32m                      setActiveTab("text");[m
+                       // Switch focus to AI continuation[m
+                       setTimeout(() => {[m
+                         const btn = document.getElementById("ai-action-btn");[m
+[36m@@ -1758,139 +1776,100 @@[m [mexport default function App() {[m
+           )}[m
+         </main>[m
+ [m
+[31m-        {/* Right Section: The AI Assistant Suite (Conditionally Hidden in Focus Mode) */}[m
+[32m+[m[32m        {/* Правая панель строится вокруг задач автора, а не отдельных ИИ-движков. */}[m
+         {!focusMode && activeStory && ([m
+           <aside className="w-96 bg-[#0e1424]/60 border-l border-slate-800/80 flex flex-col shrink-0" id="assistant-panel">[m
+[31m-            {/* Tabs Controller Header */}[m
+             <div className="flex border-b border-slate-800/80 bg-slate-950/50 p-1 gap-1 shrink-0 text-xs font-semibold">[m
+               <button[m
+[31m-                onClick={() => setActiveTab("muse")}[m
+[31m-                className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center ${[m
+[31m-                  activeTab === "muse"[m
+[31m-                    ? "bg-slate-800 text-slate-100 font-bold border border-slate-700/50"[m
+[31m-                    : "text-slate-400 hover:text-slate-200"[m
+[31m-                }`}[m
+[31m-              >[m
+[31m-                🔮 Муза[m
+[31m-              </button>[m
+[31m-              <button[m
+[31m-                onClick={() => setActiveTab("characters")}[m
+[31m-                className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center ${[m
+[31m-                  activeTab === "characters"[m
+[31m-                    ? "bg-slate-800 text-slate-100 font-bold border border-slate-700/50"[m
+[31m-                    : "text-slate-400 hover:text-slate-200"[m
+[31m-                }`}[m
+[31m-              >[m
+[31m-                👥 Персонажи[m
+[31m-              </button>[m
+[31m-              <button[m
+[31m-                onClick={() => setActiveTab("world")}[m
+[31m-                className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center ${[m
+[31m-                  activeTab === "world"[m
+[31m-                    ? "bg-slate-800 text-slate-100 font-bold border border-slate-700/50"[m
+[31m-                    : "text-slate-400 hover:text-slate-200"[m
+[31m-                }`}[m
+[31m-              >[m
+[31m-                🌍 Лор[m
+[31m-              </button>[m
+[31m-              <button[m
+[31m-                onClick={() => setActiveTab("ai")}[m
+[32m+[m[32m                type="button"[m
+[32m+[m[32m                onClick={() => setActiveTab("text")}[m
+                 className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center ${[m
+[31m-                  activeTab === "ai"[m
+[32m+[m[32m                  activeTab === "text"[m
+                     ? "bg-slate-800 text-slate-100 font-bold border border-slate-700/50"[m
+                     : "text-slate-400 hover:text-slate-200"[m
+                 }`}[m
+               >[m
+[31m-                ✨ ИИ-Помощник[m
+[32m+[m[32m                Текст[m
+               </button>[m
+               <button[m
+[31m-                onClick={() => setActiveTab("agent")}[m
+[32m+[m[32m                type="button"[m
+[32m+[m[32m                onClick={() => setActiveTab("book")}[m
+                 className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center ${[m
+[31m-                  activeTab === "agent"[m
+[32m+[m[32m                  activeTab === "book"[m
+                     ? "bg-slate-800 text-slate-100 font-bold border border-slate-700/50"[m
+                     : "text-slate-400 hover:text-slate-200"[m
+                 }`}[m
+               >[m
+[31m-                🤖 Агент[m
+[32m+[m[32m                Книга[m
+               </button>[m
+               <button[m
+[31m-                onClick={() => setActiveTab("codex")}[m
+[32m+[m[32m                type="button"[m
+[32m+[m[32m                onClick={() => setActiveTab("muse")}[m
+                 className={`flex-1 py-2.5 rounded-lg transition-all cursor-pointer text-center ${[m
+[31m-                  activeTab === "codex"[m
+[32m+[m[32m                  activeTab === "muse"[m
+                     ? "bg-slate-800 text-slate-100 font-bold border border-slate-700/50"[m
+                     : "text-slate-400 hover:text-slate-200"[m
+                 }`}[m
+               >[m
+[31m-                📚 Кодекс[m
+[32m+[m[32m                Муза[m
+               </button>[m
+             </div>[m
+ [m
+[31m-            {/* Scrollable Tab Views */}[m
+             <div className="flex-1 overflow-hidden p-4">[m
+               <React.Suspense fallback={<div className="text-slate-500 text-sm p-4">Загрузка…</div>}>[m
+[31m-              {activeTab === "muse" && ([m
+[31m-                <MuseChat[m
+[31m-                  story={activeStory}[m
+[31m-                  currentDraft={activeChapter?.content || ""}[m
+[31m-                  selectedModel={selectedModel}[m
+[31m-                  llmProvider={llmProvider}[m
+[31m-                  llmApiFields={llmApiFields}[m
+[31m-                />[m
+[31m-              )}[m
+[31m-              {activeTab === "characters" && ([m
+[31m-                <CharacterManager [m
+[31m-                  story={activeStory} [m
+[31m-                  onUpdateCharacters={handleUpdateCharacters} [m
+[31m-                  selectedModel={selectedModel}[m
+[31m-                  llmProvider={llmProvider}[m
+[31m-                  llmApiFields={llmApiFields}[m
+[31m-                />[m
+[31m-              )}[m
+[31m-              {activeTab === "world" && ([m
+[31m-                <WorldBuilder [m
+[31m-                  story={activeStory} [m
+[31m-                  onUpdateWorldRules={handleUpdateWorldRules} [m
+[31m-                  selectedModel={selectedModel}[m
+[31m-                  llmProvider={llmProvider}[m
+[31m-                  llmApiFields={llmApiFields}[m
+[31m-                />[m
+[31m-              )}[m
+[31m-              {activeTab === "ai" && ([m
+[31m-                <AIPanel [m
+[31m-                  story={activeStory} [m
+[31m-                  currentDraft={activeChapter?.content || ""} [m
+[31m-                  selectedText={selectedText}[m
+[31m-                  textSelection={textSelection}[m
+[31m-                  onInsertText={handleInsertText}[m
+[31m-                  onApplyAuthorEdit={handleApplyAuthorEdit}[m
+[31m-                  activeChapter={activeChapter}[m
+[31m-                  onUpdateStoryChapters={handleUpdateStoryChapters}[m
+[31m-                  selectedModel={selectedModel}[m
+[31m-                  llmProvider={llmProvider}[m
+[31m-                  llmApiFields={llmApiFields}[m
+[31m-                  openAuthorRequest={openAuthorRequest}[m
+[31m-                />[m
+[31m-              )}[m
+[31m-              {activeTab === "agent" && ([m
+[31m-                <AgentPanel[m
+[31m-                  story={activeStory}[m
+[31m-                  currentDraft={activeChapter?.content || ""}[m
+[31m-                  activeChapter={activeChapter}[m
+[31m-                  selectedModel={selectedModel}[m
+[31m-                  llmProvider={llmProvider}[m
+[31m-                  llmApiFields={llmApiFields}[m
+[31m-                  onInsertText={handleInsertText}[m
+[31m-                />[m
+[31m-              )}[m
+[31m-              {activeTab === "codex" && ([m
+[31m-                <CodexPanel story={activeStory} />[m
+[31m-              )}[m
+[32m+[m[32m                {activeTab === "text" && ([m
+[32m+[m[32m                  <AIPanel[m
+[32m+[m[32m                    story={activeStory}[m
+[32m+[m[32m                    currentDraft={activeChapter?.content || ""}[m
+[32m+[m[32m                    selectedText={selectedText}[m
+[32m+[m[32m                    textSelection={textSelection}[m
+[32m+[m[32m                    onInsertText={handleInsertText}[m
+[32m+[m[32m                    onApplyAuthorEdit={handleApplyAuthorEdit}[m
+[32m+[m[32m                    activeChapter={activeChapter}[m
+[32m+[m[32m                    onUpdateStoryChapters={handleUpdateStoryChapters}[m
+[32m+[m[32m                    selectedModel={selectedModel}[m
+[32m+[m[32m                    llmProvider={llmProvider}[m
+[32m+[m[32m                    llmApiFields={llmApiFields}[m
+[32m+[m[32m                    openAuthorRequest={openAuthorRequest}[m
+[32m+[m[32m                    onOpenAuthorProfile={() => setShowAuthorProfile(true)}[m
+[32m+[m[32m                  />[m
+[32m+[m[32m                )}[m
+[32m+[m[32m                {activeTab === "book" && ([m
+[32m+[m[32m                  <BookPanel[m
+[32m+[m[32m                    story={activeStory}[m
+[32m+[m[32m                    onUpdateCharacters={handleUpdateCharacters}[m
+[32m+[m[32m                    onUpdateWorldRules={handleUpdateWorldRules}[m
+[32m+[m[32m                    selectedModel={selectedModel}[m
+[32m+[m[32m                    llmProvider={llmProvider}[m
+[32m+[m[32m                    llmApiFields={llmApiFields}[m
+[32m+[m[32m                  />[m
+[32m+[m[32m                )}[m
+[32m+[m[32m                {activeTab === "muse" && ([m
+[32m+[m[32m                  <MuseChat[m
+[32m+[m[32m                    story={activeStory}[m
+[32m+[m[32m                    currentDraft={activeChapter?.content || ""}[m
+[32m+[m[32m                    selectedModel={selectedModel}[m
+[32m+[m[32m                    llmProvider={llmProvider}[m
+[32m+[m[32m                    llmApiFields={llmApiFields}[m
+[32m+[m[32m                  />[m
+[32m+[m[32m                )}[m
+               </React.Suspense>[m
+             </div>[m
+           </aside>[m
+         )}[m
+       </div>[m
+ [m
+[32m+[m[32m      <React.Suspense fallback={null}>[m
+[32m+[m[32m        <AuthorProfileModal[m
+[32m+[m[32m          open={showAuthorProfile}[m
+[32m+[m[32m          onClose={() => setShowAuthorProfile(false)}[m
+[32m+[m[32m          fallbackStoryId={activeStory?.id}[m
+[32m+[m[32m          selectedModel={selectedModel}[m
+[32m+[m[32m          llmProvider={llmProvider}[m
+[32m+[m[32m          llmApiFields={llmApiFields}[m
+[32m+[m[32m        />[m
+[32m+[m[32m      </React.Suspense>[m
+[32m+[m
+       {/* LLM API keys settings */}[m
+       {showLlmSettings && ([m
+         <div className="fixed inset-0 z-[80] bg-black/75 backdrop-blur-md flex items-center justify-center p-4" id="llm-settings-modal">[m
+[1mdiff --git a/src/components/AIPanel.tsx b/src/components/AIPanel.tsx[m
+[1mindex 971f0b4..a25e558 100644[m
+[1m--- a/src/components/AIPanel.tsx[m
+[1m+++ b/src/components/AIPanel.tsx[m
+[36m@@ -3,6 +3,7 @@[m [mimport { Sparkles, Wand2, ArrowRight, Copy, Check, ChevronRight, HelpCircle, Fil[m
+ import ReactMarkdown from "react-markdown";[m
+ import { Story, Chapter, TextSelection, AuthorEditTarget, AuthorProfileRecord, HumanizeReport } from "../types";[m
+ import AuthorEditorPanel from "./AuthorEditorPanel";[m
+[32m+[m[32mimport ChapterReadinessPanel from "./ChapterReadinessPanel";[m
+ import { loadAuthorProfile, onAuthorProfileUpdated } from "../lib/authorStorage";[m
+ import { canonDossier, findPreviousCanonChapter } from "../lib/chapterContext";[m
+ import { HUMANIZE_DEPTHS, VOICE_PRESETS, type HumanizeDepth } from "../../server/humanStyle";[m
+[36m@@ -23,10 +24,11 @@[m [minterface AIPanelProps {[m
+   /** model + llmProvider + apiKeys из шапки */[m
+   llmApiFields?: Record<string, unknown>;[m
+   openAuthorRequest?: number;[m
+[32m+[m[32m  onOpenAuthorProfile?: () => void;[m
+ }[m
+ [m
+[31m-export default function AIPanel({ story, currentDraft, selectedText, textSelection, onInsertText, onApplyAuthorEdit, activeChapter, onUpdateStoryChapters, selectedModel, llmProvider = "auto", llmApiFields, openAuthorRequest }: AIPanelProps) {[m
+[31m-  const [activeTool, setActiveTool] = useState<"continue" | "improve" | "author" | "brainstorm">("continue");[m
+[32m+[m[32mexport default function AIPanel({ story, currentDraft, selectedText, textSelection, onInsertText, onApplyAuthorEdit, activeChapter, onUpdateStoryChapters, selectedModel, llmProvider = "auto", llmApiFields, openAuthorRequest, onOpenAuthorProfile }: AIPanelProps) {[m
+[32m+[m[32m  const [activeTool, setActiveTool] = useState<"continue" | "improve" | "author" | "readiness" | "brainstorm">("continue");[m
+   useEffect(() => {[m
+     if (openAuthorRequest) setActiveTool("author");[m
+   }, [openAuthorRequest]);[m
+[36m@@ -123,12 +125,8 @@[m [mexport default function AIPanel({ story, currentDraft, selectedText, textSelecti[m
+     return () => { cancelled = true; };[m
+   }, [story.id, activeTool]);[m
+ [m
+[31m-  // Синхрон с вкладкой «Автор»: образец сохраняется в IndexedDB, подхватываем сразу[m
+[31m-  useEffect(() => {[m
+[31m-    return onAuthorProfileUpdated((storyId) => {[m
+[31m-      if (storyId === story.id) refreshAuthorProfile();[m
+[31m-    });[m
+[31m-  }, [story.id]);[m
+[32m+[m[32m  // Единый профиль автора может измениться из верхней панели в любой момент.[m
+[32m+[m[32m  useEffect(() => onAuthorProfileUpdated(refreshAuthorProfile), [story.id]);[m
+ [m
+   // Дополняет запрос генерации данными для «очеловечивания с первого прохода»[m
+   const applyHumanizePayload = (payload: any, excludeChapterId?: string) => {[m
+[36m@@ -417,47 +415,51 @@[m [mexport default function AIPanel({ story, currentDraft, selectedText, textSelecti[m
+ [m
+   return ([m
+     <div className="flex flex-col h-full bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden" id="ai-panel-container">[m
+[31m-      {/* Tool Selector Tabs */}[m
+[31m-      <div className="flex border-b border-slate-800 bg-slate-950/40 p-1 text-xs font-medium">[m
+[32m+[m[32m      {/* Один результат автора — одна точка входа. Детали раскрываются только после выбора действия. */}[m
+[32m+[m[32m      <div className="grid grid-cols-4 gap-1 border-b border-slate-800 bg-slate-950/40 p-1 text-[10px] font-semibold">[m
+         <button[m
+[31m-          onClick={() => { setActiveTool("continue"); setResult(""); }}[m
+[31m-          className={`flex-1 py-2 text-center rounded-lg transition-colors cursor-pointer ${[m
+[31m-            activeTool === "continue"[m
+[31m-              ? "bg-blue-600/25 text-blue-400 border border-blue-500/30 font-semibold"[m
+[32m+[m[32m          type="button"[m
+[32m+[m[32m          onClick={() => { setActiveTool("continue"); setContinueMode("whole_chapter"); setResult(""); }}[m
+[32m+[m[32m          className={`rounded-lg px-1 py-2 transition-colors cursor-pointer ${[m
+[32m+[m[32m            activeTool === "continue" && continueMode !== "paragraphs"[m
+[32m+[m[32m              ? "bg-blue-600/25 text-blue-300 border border-blue-500/30"[m
+               : "text-slate-400 hover:text-slate-200"[m
+           }`}[m
+         >[m
+[31m-          Продолжить сюжет[m
+[32m+[m[32m          Написать[m
+         </button>[m
+         <button[m
+[31m-          onClick={() => { setActiveTool("improve"); setResult(""); }}[m
+[31m-          className={`flex-1 py-2 text-center rounded-lg transition-colors cursor-pointer ${[m
+[31m-            activeTool === "improve"[m
+[31m-              ? "bg-blue-600/25 text-blue-400 border border-blue-500/30 font-semibold"[m
+[32m+[m[32m          type="button"[m
+[32m+[m[32m          onClick={() => { setActiveTool("continue"); setContinueMode("paragraphs"); setResult(""); }}[m
+[32m+[m[32m          className={`rounded-lg px-1 py-2 transition-colors cursor-pointer ${[m
+[32m+[m[32m            activeTool === "continue" && continueMode === "paragraphs"[m
+[32m+[m[32m              ? "bg-blue-600/25 text-blue-300 border border-blue-500/30"[m
+               : "text-slate-400 hover:text-slate-200"[m
+           }`}[m
+         >[m
+[31m-          Улучшить стиль[m
+[32m+[m[32m          Продолжить[m
+         </button>[m
+         <button[m
+[31m-          onClick={() => { setActiveTool("author"); setResult(""); }}[m
+[31m-          className={`flex-1 py-2 text-center rounded-lg transition-colors cursor-pointer ${[m
+[31m-            activeTool === "author"[m
+[31m-              ? "bg-emerald-600/20 text-emerald-300 border border-emerald-500/30 font-semibold"[m
+[32m+[m[32m          type="button"[m
+[32m+[m[32m          onClick={() => { setActiveTool("improve"); setResult(""); }}[m
+[32m+[m[32m          className={`rounded-lg px-1 py-2 transition-colors cursor-pointer ${[m
+[32m+[m[32m            activeTool === "improve" || activeTool === "author"[m
+[32m+[m[32m              ? "bg-emerald-600/20 text-emerald-300 border border-emerald-500/30"[m
+               : "text-slate-400 hover:text-slate-200"[m
+           }`}[m
+         >[m
+[31m-          Голос автора[m
+[32m+[m[32m          Редактировать[m
+         </button>[m
+         <button[m
+[31m-          onClick={() => { setActiveTool("brainstorm"); setResult(""); }}[m
+[31m-          className={`flex-1 py-2 text-center rounded-lg transition-colors cursor-pointer ${[m
+[31m-            activeTool === "brainstorm"[m
+[31m-              ? "bg-blue-600/25 text-blue-400 border border-blue-500/30 font-semibold"[m
+[32m+[m[32m          type="button"[m
+[32m+[m[32m          onClick={() => { setActiveTool("readiness"); setResult(""); }}[m
+[32m+[m[32m          className={`rounded-lg px-1 py-2 transition-colors cursor-pointer ${[m
+[32m+[m[32m            activeTool === "readiness"[m
+[32m+[m[32m              ? "bg-violet-600/25 text-violet-300 border border-violet-500/30"[m
+               : "text-slate-400 hover:text-slate-200"[m
+           }`}[m
+         >[m
+[31m-          Генератор идей[m
+[32m+[m[32m          Проверить[m
+         </button>[m
+       </div>[m
+ [m
+[36m@@ -755,6 +757,14 @@[m [mexport default function AIPanel({ story, currentDraft, selectedText, textSelecti[m
+                 className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded p-2 text-xs text-slate-200 outline-none"[m
+               />[m
+             </div>[m
+[32m+[m[32m            <button[m
+[32m+[m[32m              type="button"[m
+[32m+[m[32m              onClick={() => { setActiveTool("author"); setResult(""); }}[m
+[32m+[m[32m              className="w-full rounded-lg border border-emerald-900/60 bg-emerald-950/20 px-3 py-2 text-left text-[11px] text-emerald-200 hover:bg-emerald-950/35"[m
+[32m+[m[32m            >[m
+[32m+[m[32m              <span className="font-semibold">Нужна бережная редактура?</span>[m
+[32m+[m[32m              <span className="ml-1 text-emerald-300/70">Покажу diff и проверю голос, факты и защищённые термины.</span>[m
+[32m+[m[32m            </button>[m
+           </div>[m
+         )}[m
+ [m
+[36m@@ -808,6 +818,20 @@[m [mexport default function AIPanel({ story, currentDraft, selectedText, textSelecti[m
+             llmProvider={llmProvider}[m
+             llmApiFields={llmApiFields}[m
+             onApply={onApplyAuthorEdit}[m
+[32m+[m[32m            onOpenAuthorProfile={onOpenAuthorProfile}[m
+[32m+[m[32m          />[m
+[32m+[m[32m        )}[m
+[32m+[m
+[32m+[m[32m        {activeTool === "readiness" && ([m
+[32m+[m[32m          <ChapterReadinessPanel[m
+[32m+[m[32m            story={story}[m
+[32m+[m[32m            activeChapter={activeChapter}[m
+[32m+[m[32m            currentDraft={currentDraft}[m
+[32m+[m[32m            selectedModel={selectedModel}[m
+[32m+[m[32m            llmProvider={llmProvider}[m
+[32m+[m[32m            llmApiFields={llmApiFields}[m
+[32m+[m[32m            hasAuthorVoice={hasAuthorSample}[m
+[32m+[m[32m            onOpenAuthorEditor={() => setActiveTool("author")}[m
+           />[m
+         )}[m
+ [m
+[36m@@ -855,7 +879,7 @@[m [mexport default function AIPanel({ story, currentDraft, selectedText, textSelecti[m
+                         disabled={locked}[m
+                         title={[m
+                           locked[m
+[31m-                            ? "Нужен образец стиля: загрузите текст во вкладке «Автор» или напишите главу в книге"[m
+[32m+[m[32m                            ? "Нужен образец стиля: откройте «Профиль автора» или напишите главу в книге"[m
+                             : depth.description[m
+                         }[m
+                         onClick={() => setHumanizeDepth(depthId)}[m
+[36m@@ -875,13 +899,13 @@[m [mexport default function AIPanel({ story, currentDraft, selectedText, textSelecti[m
+                   <p className="text-[10px] text-emerald-400 flex items-center gap-1">[m
+                     <CheckCircle2 className="w-3 h-3" />[m
+                     {authorProfile?.voiceSheet[m
+[31m-                      ? "Пишем голосом автора — по образцу из вкладки «Автор»"[m
+[31m-                      : "Образец из вкладки «Автор» — манера будет подтянута"}[m
+[32m+[m[32m                      ? "Голос автора подключён — паспорт будет учтён в редактуре"[m
+[32m+[m[32m                      : "Образец автора подключён — манера будет учтена"}[m
+                   </p>[m
+                 ) : sampleSource === "chapters" ? ([m
+                   <p className="text-[10px] text-emerald-400 flex items-center gap-1">[m
+                     <CheckCircle2 className="w-3 h-3" />[m
+[31m-                    Образец стиля: уже написанные главы книги (можно уточнить во вкладке «Автор»)[m
+[32m+[m[32m                    Образец стиля: уже написанные главы книги (можно уточнить в профиле автора)[m
+                   </p>[m
+                 ) : ([m
+                   <div className="space-y-1">[m
+[36m@@ -895,14 +919,14 @@[m [mexport default function AIPanel({ story, currentDraft, selectedText, textSelecti[m
+                       ))}[m
+                     </select>[m
+                     <p className="text-[10px] text-amber-400/90">[m
+[31m-                      «Максимум» нужен образец стиля (≥300 знаков): вкладка «Автор» (TXT/Word) или любая уже написанная глава.[m
+[32m+[m[32m                      «Максимум» нужен образец стиля (≥300 знаков): профиль автора (TXT/Word) или любая уже написанная глава.[m
+                     </p>[m
+                     <button[m
+                       type="button"[m
+[31m-                      onClick={() => setActiveTool("author")}[m
+[32m+[m[32m                      onClick={onOpenAuthorProfile}[m
+                       className="text-[10px] text-emerald-400 hover:text-emerald-300 underline cursor-pointer"[m
+                     >[m
+[31m-                      Открыть вкладку «Автор» и загрузить образец[m
+[32m+[m[32m                      Открыть профиль автора[m
+                     </button>[m
+                   </div>[m
+                 )}[m
+[36m@@ -912,7 +936,7 @@[m [mexport default function AIPanel({ story, currentDraft, selectedText, textSelecti[m
+         )}[m
+ [m
+         {/* Action / Stop buttons */}[m
+[31m-        {activeTool === "author" ? null : loading ? ([m
+[32m+[m[32m        {activeTool === "author" || activeTool === "readiness" ? null : loading ? ([m
+           <div className="space-y-2">[m
+             <div className="w-full py-2.5 bg-slate-800/80 border border-slate-700 text-slate-200 rounded-lg text-xs font-semibold flex items-center justify-center gap-2">[m
+               <div className="w-3.5 h-3.5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />[m
+[1mdiff --git a/src/components/AuthorEditorPanel.tsx b/src/components/AuthorEditorPanel.tsx[m
+[1mindex e9b72e6..1be335d 100644[m
+[1m--- a/src/components/AuthorEditorPanel.tsx[m
+[1m+++ b/src/components/AuthorEditorPanel.tsx[m
+[36m@@ -55,6 +55,7 @@[m [minterface AuthorEditorPanelProps {[m
+   llmProvider?: "auto" | "gemini" | "nvidia" | "groq" | "openrouter";[m
+   llmApiFields?: Record<string, unknown>;[m
+   onApply: (text: string, target: AuthorEditTarget) => boolean;[m
+[32m+[m[32m  onOpenAuthorProfile?: () => void;[m
+ }[m
+ [m
+ type Scope = "selection" | "chapter" | "detector";[m
+[36m@@ -122,6 +123,7 @@[m [mexport default function AuthorEditorPanel({[m
+   llmProvider = "auto",[m
+   llmApiFields,[m
+   onApply,[m
+[32m+[m[32m  onOpenAuthorProfile,[m
+ }: AuthorEditorPanelProps) {[m
+   const [sample, setSample] = useState("");[m
+   const [sampleFileName, setSampleFileName] = useState("");[m
+[36m@@ -496,86 +498,35 @@[m [mexport default function AuthorEditorPanel({[m
+ [m
+   return ([m
+     <div className="space-y-4" id="author-editor-panel">[m
+[31m-      <div className="rounded-xl border border-emerald-900/50 bg-emerald-950/20 p-3 space-y-2">[m
+[31m-        <div className="flex items-center gap-2 text-emerald-300">[m
+[31m-          <Fingerprint className="w-4 h-4" />[m
+[31m-          <h3 className="text-xs font-bold">Паспорт голоса книги</h3>[m
+[31m-        </div>[m
+[31m-        <textarea[m
+[31m-          id="author-profile-sample"[m
+[31m-          value={sample}[m
+[31m-          onChange={(event) => setSample(event.target.value)}[m
+[31m-          onBlur={() => {[m
+[31m-            if (sample.trim().length > 0) {[m
+[31m-              void persistProfile().then(() => {[m
+[31m-                setProfileStatus([m
+[31m-                  sample.trim().length >= 300[m
+[31m-                    ? `Образец сохранён (${sample.trim().length.toLocaleString("ru-RU")} знаков) для этой книги`[m
+[31m-                    : `Текст сохранён, но для «Максимум» нужно ≥300 знаков (сейчас ${sample.trim().length})`,[m
+[31m-                );[m
+[31m-              }).catch(() => setProfileStatus("Не удалось сохранить образец"));[m
+[31m-            }[m
+[31m-          }}[m
+[31m-          rows={5}[m
+[31m-          placeholder="Вставьте главу, написанную автором без ИИ. Образец используется только как манера, не как источник событий."[m
+[31m-          className="w-full rounded-lg border border-slate-800 bg-slate-950 p-2.5 text-xs text-slate-200 outline-none focus:border-emerald-700"[m
+[31m-        />[m
+[31m-        <div className="flex gap-2">[m
+[31m-          <label className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-emerald-800/70 px-2 py-2 text-[11px] text-emerald-300 hover:bg-emerald-950/30">[m
+[31m-            <Upload className="w-3.5 h-3.5" />[m
+[31m-            Загрузить TXT или DOCX[m
+[31m-            <input[m
+[31m-              id="author-sample-file-input"[m
+[31m-              type="file"[m
+[31m-              accept=".txt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document"[m
+[31m-              className="hidden"[m
+[31m-              onChange={(event) => { handleSampleFile(event.target.files?.[0]); event.currentTarget.value = ""; }}[m
+[31m-            />[m
+[31m-          </label>[m
+[31m-          <button onClick={clearProfile} className="rounded-lg border border-red-900/60 px-2.5 text-red-400 hover:bg-red-950/30" title="Удалить образец и паспорт">[m
+[31m-            <Trash2 className="w-3.5 h-3.5" />[m
+[31m-          </button>[m
+[31m-        </div>[m
+[31m-        {sample.trim().length > 0 && ([m
+[31m-          <div className="flex items-center justify-between rounded-lg bg-slate-950/60 px-2 py-1.5 text-[10px] text-slate-400">[m
+[31m-            <span className="truncate">[m
+[31m-              {sampleFileName ? `Файл: ${sampleFileName} · ` : ""}[m
+[31m-              {sample.trim().length.toLocaleString("ru-RU")} знаков[m
+[31m-              {sample.trim().length >= 300 ? " · сохранён для «Максимум»" : " · мало для «Максимум»"}[m
+[31m-            </span>[m
+[31m-            <button onClick={() => { void clearSampleOnly(); }} className="ml-2 text-red-400" title="Удалить загруженный текст">[m
+[31m-              <Trash2 className="w-3 h-3" />[m
+[31m-            </button>[m
+[32m+[m[32m      <div className="rounded-xl border border-emerald-900/50 bg-emerald-950/20 p-3">[m
+[32m+[m[32m        <div className="flex items-start justify-between gap-3">[m
+[32m+[m[32m          <div>[m
+[32m+[m[32m            <div className="flex items-center gap-2 text-emerald-300">[m
+[32m+[m[32m              <Fingerprint className="w-4 h-4" />[m
+[32m+[m[32m              <h3 className="text-xs font-bold">Голос автора</h3>[m
+[32m+[m[32m            </div>[m
+[32m+[m[32m            <p className="mt-1 text-[10px] leading-relaxed text-slate-400">[m
+[32m+[m[32m              {sample.trim().length >= 300[m
+[32m+[m[32m                ? voiceSheet[m
+[32m+[m[32m                  ? "Паспорт подключён и будет учтён при бережной редактуре."[m
+[32m+[m[32m                  : "Образец подключён. Постройте паспорт в профиле для более точной настройки."[m
+[32m+[m[32m                : "Добавьте собственный образец, чтобы редактура сохраняла ваш голос."}[m
+[32m+[m[32m            </p>[m
+           </div>[m
+[31m-        )}[m
+[31m-        <input[m
+[31m-          value={styleDescription}[m
+[31m-          onChange={(event) => setStyleDescription(event.target.value)}[m
+[31m-          placeholder="Описание проекта и голоса: жанр, тон, ограничения…"[m
+[31m-          className="w-full rounded-lg border border-slate-800 bg-slate-950 p-2 text-xs text-slate-200 outline-none"[m
+[31m-        />[m
+[31m-        <input[m
+[31m-          value={protectedTermsText}[m
+[31m-          onChange={(event) => setProtectedTermsText(event.target.value)}[m
+[31m-          placeholder="Защищённые имена, предметы и термины — через запятую"[m
+[31m-          className="w-full rounded-lg border border-slate-800 bg-slate-950 p-2 text-xs text-slate-200 outline-none"[m
+[31m-        />[m
+[31m-        <div className="flex gap-2">[m
+           <button[m
+[31m-            id="build-author-profile-btn"[m
+[31m-            onClick={buildProfile}[m
+[31m-            disabled={profileLoading || sample.trim().length < 300}[m
+[31m-            className="flex-1 rounded-lg border border-emerald-800 bg-emerald-900/30 px-2 py-2 text-[11px] font-semibold text-emerald-300 disabled:opacity-40"[m
+[32m+[m[32m            type="button"[m
+[32m+[m[32m            onClick={onOpenAuthorProfile}[m
+[32m+[m[32m            className="shrink-0 rounded-lg border border-emerald-800/70 px-2.5 py-1.5 text-[10px] font-semibold text-emerald-300 hover:bg-emerald-950/40"[m
+           >[m
+[31m-            {profileLoading ? <Loader2 className="inline w-3.5 h-3.5 animate-spin mr-1" /> : <Fingerprint className="inline w-3.5 h-3.5 mr-1" />}[m
+[31m-            Построить паспорт[m
+[31m-          </button>[m
+[31m-          <button onClick={saveSettings} className="rounded-lg border border-slate-700 px-2 py-2 text-slate-300" title="Сохранить локально">[m
+[31m-            <Save className="w-3.5 h-3.5" />[m
+[32m+[m[32m            Профиль автора[m
+           </button>[m
+         </div>[m
+[31m-        {profileStatus && <p className="text-[10px] text-slate-400">{profileStatus}</p>}[m
+[31m-        {voiceSheet && <ProfileView profile={voiceSheet} />}[m
+[32m+[m[32m        {sample.trim().length >= 300 && ([m
+[32m+[m[32m          <div className="mt-2 flex items-center gap-2 text-[10px] text-emerald-300">[m
+[32m+[m[32m            <CheckCircle2 className="h-3.5 w-3.5" />[m
+[32m+[m[32m            <span>{sampleFileName ? `Образец: ${sampleFileName}` : `Образец: ${sample.trim().length.toLocaleString("ru-RU")} знаков`}</span>[m
+[32m+[m[32m          </div>[m
+[32m+[m[32m        )}[m
+       </div>[m
+ [m
+       <div className="space-y-2">[m
+[1mdiff --git a/src/index.css b/src/index.css[m
+[1mindex f8f22d2..903cef9 100644[m
+[1m--- a/src/index.css[m
+[1m+++ b/src/index.css[m
+[36m@@ -1,9 +1,8 @@[m
+[31m-@import url('https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap');[m
+ @import "tailwindcss";[m
+ [m
+ @theme {[m
+[31m-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;[m
+[31m-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;[m
+[32m+[m[32m  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;[m
+[32m+[m[32m  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;[m
+ }[m
+ [m
+ body {[m
+[1mdiff --git a/src/lib/authorStorage.ts b/src/lib/authorStorage.ts[m
+[1mindex 14ea805..5a9b5cd 100644[m
+[1m--- a/src/lib/authorStorage.ts[m
+[1m+++ b/src/lib/authorStorage.ts[m
+[36m@@ -7,6 +7,7 @@[m [mconst REVISIONS = "revisions";[m
+ const AGENT_EPISODES = "agent_episodes";[m
+ const DEEP_PROFILES = "deep_profiles";[m
+ const PROJECT_CODEX = "project_codex";[m
+[32m+[m[32mexport const GLOBAL_AUTHOR_PROFILE_ID = "__global_author_profile__";[m
+ [m
+ function openDatabase(): Promise<IDBDatabase> {[m
+   return new Promise((resolve, reject) => {[m
+[36m@@ -55,51 +56,83 @@[m [mfunction requestResult<T>(request: IDBRequest<T>): Promise<T> {[m
+ [m
+ const PROFILE_UPDATED_EVENT = "writers-studio-author-profile-updated";[m
+ [m
+[31m-/** Уведомить другие панели (ИИ-Помощник), что образец/паспорт изменился. */[m
+[31m-export function notifyAuthorProfileUpdated(storyId: string): void {[m
+[32m+[m[32m/** Уведомить все редакторские поверхности, что единый голос автора изменился. */[m
+[32m+[m[32mexport function notifyAuthorProfileUpdated(profileId = GLOBAL_AUTHOR_PROFILE_ID): void {[m
+   if (typeof window === "undefined") return;[m
+[31m-  window.dispatchEvent(new CustomEvent(PROFILE_UPDATED_EVENT, { detail: { storyId } }));[m
+[32m+[m[32m  window.dispatchEvent(new CustomEvent(PROFILE_UPDATED_EVENT, { detail: { profileId } }));[m
+ }[m
+ [m
+[31m-export function onAuthorProfileUpdated(handler: (storyId: string) => void): () => void {[m
+[32m+[m[32mexport function onAuthorProfileUpdated(handler: () => void): () => void {[m
+   if (typeof window === "undefined") return () => {};[m
+[31m-  const listener = (event: Event) => {[m
+[31m-    const storyId = (event as CustomEvent<{ storyId?: string }>).detail?.storyId;[m
+[31m-    if (storyId) handler(storyId);[m
+[31m-  };[m
+[32m+[m[32m  const listener = () => handler();[m
+   window.addEventListener(PROFILE_UPDATED_EVENT, listener);[m
+   return () => window.removeEventListener(PROFILE_UPDATED_EVENT, listener);[m
+ }[m
+ [m
+[31m-export async function loadAuthorProfile(storyId: string): Promise<AuthorProfileRecord | undefined> {[m
+[32m+[m[32masync function readProfile(profileId: string): Promise<AuthorProfileRecord | undefined> {[m
+   const database = await openDatabase();[m
+   try {[m
+     const transaction = database.transaction(PROFILES, "readonly");[m
+[31m-    return await requestResult(transaction.objectStore(PROFILES).get(storyId));[m
+[32m+[m[32m    return await requestResult(transaction.objectStore(PROFILES).get(profileId));[m
+   } finally {[m
+     database.close();[m
+   }[m
+ }[m
+ [m
+[31m-export async function saveAuthorProfile(profile: AuthorProfileRecord): Promise<void> {[m
+[32m+[m[32m/**[m
+[32m+[m[32m * Единый паспорт принадлежит автору, а не отдельной книге. Если глобального[m
+[32m+[m[32m * профиля ещё нет, первый открытый профиль старой книги переносится сюда.[m
+[32m+[m[32m */[m
+[32m+[m[32mexport async function loadGlobalAuthorProfile(fallbackStoryId?: string): Promise<AuthorProfileRecord | undefined> {[m
+[32m+[m[32m  const global = await readProfile(GLOBAL_AUTHOR_PROFILE_ID);[m
+[32m+[m[32m  if (global || !fallbackStoryId || fallbackStoryId === GLOBAL_AUTHOR_PROFILE_ID) return global;[m
+[32m+[m
+[32m+[m[32m  const legacy = await readProfile(fallbackStoryId);[m
+[32m+[m[32m  if (!legacy) return undefined;[m
+[32m+[m
+[32m+[m[32m  const migrated = { ...legacy, storyId: GLOBAL_AUTHOR_PROFILE_ID, updatedAt: Date.now() };[m
+[32m+[m[32m  await saveGlobalAuthorProfile(migrated);[m
+[32m+[m[32m  return migrated;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mexport async function saveGlobalAuthorProfile(profile: Omit<AuthorProfileRecord, "storyId"> | AuthorProfileRecord): Promise<void> {[m
+   const database = await openDatabase();[m
+   try {[m
+     const transaction = database.transaction(PROFILES, "readwrite");[m
+[31m-    await requestResult(transaction.objectStore(PROFILES).put(profile));[m
+[32m+[m[32m    await requestResult(transaction.objectStore(PROFILES).put({ ...profile, storyId: GLOBAL_AUTHOR_PROFILE_ID }));[m
+   } finally {[m
+     database.close();[m
+   }[m
+[31m-  notifyAuthorProfileUpdated(profile.storyId);[m
+[32m+[m[32m  notifyAuthorProfileUpdated();[m
+ }[m
+ [m
+[31m-export async function deleteAuthorProfile(storyId: string): Promise<void> {[m
+[32m+[m[32mexport async function deleteGlobalAuthorProfile(): Promise<void> {[m
+   const db = await openDatabase();[m
+[31m-  await new Promise<void>((resolve, reject) => {[m
+[31m-    const request = db.transaction(PROFILES, "readwrite").objectStore(PROFILES).delete(storyId);[m
+[31m-    request.onsuccess = () => resolve();[m
+[31m-    request.onerror = () => reject(request.error);[m
+[31m-  });[m
+[31m-  notifyAuthorProfileUpdated(storyId);[m
+[32m+[m[32m  try {[m
+[32m+[m[32m    await new Promise<void>((resolve, reject) => {[m
+[32m+[m[32m      const request = db.transaction(PROFILES, "readwrite").objectStore(PROFILES).delete(GLOBAL_AUTHOR_PROFILE_ID);[m
+[32m+[m[32m      request.onsuccess = () => resolve();[m
+[32m+[m[32m      request.onerror = () => reject(request.error);[m
+[32m+[m[32m    });[m
+[32m+[m[32m  } finally {[m
+[32m+[m[32m    db.close();[m
+[32m+[m[32m  }[m
+[32m+[m[32m  notifyAuthorProfileUpdated();[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m/** Совместимость со старыми потребителями: все они теперь читают единый профиль. */[m
+[32m+[m[32mexport async function loadAuthorProfile(storyId: string): Promise<AuthorProfileRecord | undefined> {[m
+[32m+[m[32m  return loadGlobalAuthorProfile(storyId);[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m/** Совместимость со старыми потребителями: запись всегда становится глобальной. */[m
+[32m+[m[32mexport async function saveAuthorProfile(profile: AuthorProfileRecord): Promise<void> {[m
+[32m+[m[32m  return saveGlobalAuthorProfile(profile);[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m/** Совместимость со старыми потребителями: удаляется единый профиль автора. */[m
+[32m+[m[32mexport async function deleteAuthorProfile(_storyId: string): Promise<void> {[m
+[32m+[m[32m  return deleteGlobalAuthorProfile();[m
+ }[m
+ [m
+ export async function saveAuthorRevision(revision: AuthorRevisionRecord): Promise<void> {[m
+[1mdiff --git a/src/components/AuthorProfileModal.tsx b/src/components/AuthorProfileModal.tsx[m
+[1mnew file mode 100644[m
+[1mindex 0000000..0e5befb[m
+[1m--- /dev/null[m
+[1m+++ b/src/components/AuthorProfileModal.tsx[m
+[36m@@ -0,0 +1,262 @@[m
+[32m+[m[32mimport React, { useEffect, useState } from "react";[m
+[32m+[m[32mimport mammoth from "mammoth";[m
+[32m+[m[32mimport { CheckCircle2, Fingerprint, Loader2, Save, Trash2, Upload, X } from "lucide-react";[m
+[32m+[m[32mimport type { AuthorProfileRecord, AuthorVoiceSheet } from "../types";[m
+[32m+[m[32mimport {[m
+[32m+[m[32m  deleteGlobalAuthorProfile,[m
+[32m+[m[32m  loadGlobalAuthorProfile,[m
+[32m+[m[32m  saveGlobalAuthorProfile,[m
+[32m+[m[32m} from "../lib/authorStorage";[m
+[32m+[m
+[32m+[m[32minterface AuthorProfileModalProps {[m
+[32m+[m[32m  open: boolean;[m
+[32m+[m[32m  onClose: () => void;[m
+[32m+[m[32m  fallbackStoryId?: string;[m
+[32m+[m[32m  selectedModel?: string;[m
+[32m+[m[32m  llmProvider?: "auto" | "gemini" | "nvidia" | "groq" | "openrouter";[m
+[32m+[m[32m  llmApiFields?: Record<string, unknown>;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunction parseTerms(value: string): string[] {[m
+[32m+[m[32m  return [...new Set(value.split(/[,;\n]/u).map((term) => term.trim()).filter(Boolean))];[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunction VoiceSheetSummary({ voiceSheet }: { voiceSheet: AuthorVoiceSheet }) {[m
+[32m+[m[32m  return ([m
+[32m+[m[32m    <div className="rounded-xl border border-emerald-900/60 bg-emerald-950/20 p-3 text-xs text-slate-300 space-y-2">[m
+[32m+[m[32m      <p className="leading-relaxed">{voiceSheet.summary}</p>[m
+[32m+[m[32m      {voiceSheet.voiceRules.length > 0 && ([m
+[32m+[m[32m        <p className="text-emerald-200"><span className="font-semibold">Сохранять:</span> {voiceSheet.voiceRules.slice(0, 4).join(" · ")}</p>[m
+[32m+[m[32m      )}[m
+[32m+[m[32m      {voiceSheet.avoid.length > 0 && ([m
+[32m+[m[32m        <p className="text-amber-200"><span className="font-semibold">Не имитировать механически:</span> {voiceSheet.avoid.slice(0, 3).join(" · ")}</p>[m
+[32m+[m[32m      )}[m
+[32m+[m[32m    </div>[m
+[32m+[m[32m  );[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mexport default function AuthorProfileModal({[m
+[32m+[m[32m  open,[m
+[32m+[m[32m  onClose,[m
+[32m+[m[32m  fallbackStoryId,[m
+[32m+[m[32m  selectedModel,[m
+[32m+[m[32m  llmProvider = "auto",[m
+[32m+[m[32m  llmApiFields,[m
+[32m+[m[32m}: AuthorProfileModalProps) {[m
+[32m+[m[32m  const [sample, setSample] = useState("");[m
+[32m+[m[32m  const [sampleFileName, setSampleFileName] = useState("");[m
+[32m+[m[32m  const [styleDescription, setStyleDescription] = useState("");[m
+[32m+[m[32m  const [protectedTermsText, setProtectedTermsText] = useState("");[m
+[32m+[m[32m  const [voiceSheet, setVoiceSheet] = useState<AuthorVoiceSheet | undefined>();[m
+[32m+[m[32m  const [loading, setLoading] = useState(false);[m
+[32m+[m[32m  const [saving, setSaving] = useState(false);[m
+[32m+[m[32m  const [status, setStatus] = useState("");[m
+[32m+[m
+[32m+[m[32m  const hydrate = (profile?: AuthorProfileRecord) => {[m
+[32m+[m[32m    setSample(profile?.sample || "");[m
+[32m+[m[32m    setSampleFileName(profile?.sampleFileName || "");[m
+[32m+[m[32m    setStyleDescription(profile?.styleDescription || "");[m
+[32m+[m[32m    setProtectedTermsText(profile?.protectedTerms?.join(", ") || "");[m
+[32m+[m[32m    setVoiceSheet(profile?.voiceSheet);[m
+[32m+[m[32m  };[m
+[32m+[m
+[32m+[m[32m  useEffect(() => {[m
+[32m+[m[32m    if (!open) return;[m
+[32m+[m[32m    let cancelled = false;[m
+[32m+[m[32m    setStatus("");[m
+[32m+[m[32m    loadGlobalAuthorProfile(fallbackStoryId)[m
+[32m+[m[32m      .then((profile) => { if (!cancelled) hydrate(profile); })[m
+[32m+[m[32m      .catch(() => { if (!cancelled) setStatus("Не удалось открыть профиль автора"); });[m
+[32m+[m[32m    return () => { cancelled = true; };[m
+[32m+[m[32m  }, [open, fallbackStoryId]);[m
+[32m+[m
+[32m+[m[32m  const persist = async (changes?: Partial<AuthorProfileRecord>) => {[m
+[32m+[m[32m    const profile = {[m
+[32m+[m[32m      sample,[m
+[32m+[m[32m      sampleFileName,[m
+[32m+[m[32m      styleDescription,[m
+[32m+[m[32m      protectedTerms: parseTerms(protectedTermsText),[m
+[32m+[m[32m      voiceSheet,[m
+[32m+[m[32m      updatedAt: Date.now(),[m
+[32m+[m[32m      ...changes,[m
+[32m+[m[32m    };[m
+[32m+[m[32m    await saveGlobalAuthorProfile(profile);[m
+[32m+[m[32m    return profile;[m
+[32m+[m[32m  };[m
+[32m+[m
+[32m+[m[32m  const saveProfile = async () => {[m
+[32m+[m[32m    setSaving(true);[m
+[32m+[m[32m    setStatus("");[m
+[32m+[m[32m    try {[m
+[32m+[m[32m      await persist();[m
+[32m+[m[32m      setStatus("Профиль автора сохранён и подключён ко всем книгам.");[m
+[32m+[m[32m    } catch {[m
+[32m+[m[32m      setStatus("Не удалось сохранить профиль автора.");[m
+[32m+[m[32m    } finally {[m
+[32m+[m[32m      setSaving(false);[m
+[32m+[m[32m    }[m
+[32m+[m[32m  };[m
+[32m+[m
+[32m+[m[32m  const handleSampleFile = async (file?: File) => {[m
+[32m+[m[32m    if (!file) return;[m
+[32m+[m[32m    setStatus("");[m
+[32m+[m[32m    try {[m
+[32m+[m[32m      const lowerName = file.name.toLowerCase();[m
+[32m+[m[32m      let text = "";[m
+[32m+[m[32m      if (lowerName.endsWith(".txt")) {[m
+[32m+[m[32m        text = await file.text();[m
+[32m+[m[32m      } else if (lowerName.endsWith(".docx")) {[m
+[32m+[m[32m        const result = await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });[m
+[32m+[m[32m        text = result.value;[m
+[32m+[m[32m      } else {[m
+[32m+[m[32m        throw new Error("Поддерживаются файлы TXT и DOCX");[m
+[32m+[m[32m      }[m
+[32m+[m[32m      const trimmed = text.trim();[m
+[32m+[m[32m      if (!trimmed) throw new Error("В файле не найден текст");[m
+[32m+[m[32m      setSample(trimmed);[m
+[32m+[m[32m      setSampleFileName(file.name);[m
+[32m+[m[32m      setVoiceSheet(undefined);[m
+[32m+[m[32m      await persist({ sample: trimmed, sampleFileName: file.name, voiceSheet: undefined });[m
+[32m+[m[32m      setStatus(trimmed.length >= 300[m
+[32m+[m[32m        ? `Образец «${file.name}» сохранён. Можно построить паспорт голоса.`[m
+[32m+[m[32m        : `Файл загружен, но для паспорта нужно не менее 300 знаков: сейчас ${trimmed.length}.`);[m
+[32m+[m[32m    } catch (error: any) {[m
+[32m+[m[32m      setStatus(error.message || "Не удалось прочитать файл");[m
+[32m+[m[32m    }[m
+[32m+[m[32m  };[m
+[32m+[m
+[32m+[m[32m  const buildVoiceSheet = async () => {[m
+[32m+[m[32m    if (sample.trim().length < 300) {[m
+[32m+[m[32m      setStatus("Добавьте не менее 300 знаков человеческого образца.");[m
+[32m+[m[32m      return;[m
+[32m+[m[32m    }[m
+[32m+[m[32m    setLoading(true);[m
+[32m+[m[32m    setStatus("Строю паспорт голоса…");[m
+[32m+[m[32m    try {[m
+[32m+[m[32m      const response = await fetch("/api/writer/author", {[m
+[32m+[m[32m        method: "POST",[m
+[32m+[m[32m        headers: { "Content-Type": "application/json" },[m
+[32m+[m[32m        body: JSON.stringify({[m
+[32m+[m[32m          action: "profile",[m
+[32m+[m[32m          sample,[m
+[32m+[m[32m          styleDescription,[m
+[32m+[m[32m          ...(llmApiFields || { model: selectedModel, llmProvider }),[m
+[32m+[m[32m        }),[m
+[32m+[m[32m      });[m
+[32m+[m[32m      const data = await response.json();[m
+[32m+[m[32m      if (!response.ok) throw new Error(data.error || "Не удалось построить паспорт");[m
+[32m+[m[32m      setVoiceSheet(data.profile);[m
+[32m+[m[32m      await persist({ voiceSheet: data.profile });[m
+[32m+[m[32m      setStatus("Паспорт голоса готов и будет использоваться во всех книгах.");[m
+[32m+[m[32m    } catch (error: any) {[m
+[32m+[m[32m      setStatus(error.message || "Не удалось построить паспорт");[m
+[32m+[m[32m    } finally {[m
+[32m+[m[32m      setLoading(false);[m
+[32m+[m[32m    }[m
+[32m+[m[32m  };[m
+[32m+[m
+[32m+[m[32m  const clearProfile = async () => {[m
+[32m+[m[32m    if (!window.confirm("Удалить общий образец и паспорт голоса для всех книг?")) return;[m
+[32m+[m[32m    try {[m
+[32m+[m[32m      await deleteGlobalAuthorProfile();[m
+[32m+[m[32m      hydrate(undefined);[m
+[32m+[m[32m      setStatus("Общий профиль автора удалён.");[m
+[32m+[m[32m    } catch {[m
+[32m+[m[32m      setStatus("Не удалось удалить профиль автора.");[m
+[32m+[m[32m    }[m
+[32m+[m[32m  };[m
+[32m+[m
+[32m+[m[32m  if (!open) return null;[m
+[32m+[m
+[32m+[m[32m  const sampleLength = sample.trim().length;[m
+[32m+[m[32m  const canBuild = sampleLength >= 300;[m
+[32m+[m
+[32m+[m[32m  return ([m
+[32m+[m[32m    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="author-profile-modal-title">[m
+[32m+[m[32m      <div className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-emerald-800/60 bg-[#111827] shadow-2xl">[m
+[32m+[m[32m        <div className="flex items-start justify-between gap-4 border-b border-slate-800 bg-slate-950/50 px-6 py-5">[m
+[32m+[m[32m          <div className="flex items-start gap-3">[m
+[32m+[m[32m            <div className="rounded-xl border border-emerald-700/50 bg-emerald-950/50 p-2.5 text-emerald-300">[m
+[32m+[m[32m              <Fingerprint className="h-5 w-5" />[m
+[32m+[m[32m            </div>[m
+[32m+[m[32m            <div>[m
+[32m+[m[32m              <h2 id="author-profile-modal-title" className="text-base font-bold text-slate-100">Профиль автора</h2>[m
+[32m+[m[32m              <p className="mt-1 text-xs leading-relaxed text-slate-400">Загрузите собственный текст один раз. Голос и защищённые термины будут доступны во всех книгах и сценариях редактора.</p>[m
+[32m+[m[32m            </div>[m
+[32m+[m[32m          </div>[m
+[32m+[m[32m          <button type="button" onClick={onClose} className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-100" title="Закрыть профиль автора">[m
+[32m+[m[32m            <X className="h-4 w-4" />[m
+[32m+[m[32m          </button>[m
+[32m+[m[32m        </div>[m
+[32m+[m
+[32m+[m[32m        <div className="flex-1 space-y-5 overflow-y-auto p-6">[m
+[32m+[m[32m          <div className="rounded-xl border border-slate-800 bg-slate-950/35 p-4">[m
+[32m+[m[32m            <div className="mb-2 flex items-center justify-between gap-3">[m
+[32m+[m[32m              <div>[m
+[32m+[m[32m                <h3 className="text-sm font-semibold text-slate-200">Образец голоса</h3>[m
+[32m+[m[32m                <p className="mt-0.5 text-[11px] text-slate-500">Минимум 300 знаков текста, написанного вами без ИИ.</p>[m
+[32m+[m[32m              </div>[m
+[32m+[m[32m              <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${canBuild ? "bg-emerald-950/60 text-emerald-300" : "bg-slate-800 text-slate-400"}`}>[m
+[32m+[m[32m                {sampleLength.toLocaleString("ru-RU")} / 300[m
+[32m+[m[32m              </span>[m
+[32m+[m[32m            </div>[m
+[32m+[m[32m            <textarea[m
+[32m+[m[32m              value={sample}[m
+[32m+[m[32m              onChange={(event) => { setSample(event.target.value); setVoiceSheet(undefined); }}[m
+[32m+[m[32m              rows={9}[m
+[32m+[m[32m              placeholder="Вставьте фрагмент своей прозы. Он используется только для анализа манеры, а не как источник событий."[m
+[32m+[m[32m              className="w-full resize-y rounded-lg border border-slate-800 bg-slate-950 p-3 text-sm leading-relaxed text-slate-200 outline-none focus:border-emerald-600"[m
+[32m+[m[32m            />[m
+[32m+[m[32m            <div className="mt-3 flex flex-wrap gap-2">[m
+[32m+[m[32m              <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-emerald-800/70 px-3 py-2 text-xs font-medium text-emerald-300 hover:bg-emerald-950/30">[m
+[32m+[m[32m                <Upload className="h-3.5 w-3.5" />[m
+[32m+[m[32m                Загрузить TXT или DOCX[m
+[32m+[m[32m                <input type="file" accept=".txt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document" className="hidden" onChange={(event) => { void handleSampleFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />[m
+[32m+[m[32m              </label>[m
+[32m+[m[32m              {sampleFileName && <span className="self-center text-xs text-slate-500">Источник: {sampleFileName}</span>}[m
+[32m+[m[32m            </div>[m
+[32m+[m[32m          </div>[m
+[32m+[m
+[32m+[m[32m          <div className="grid gap-4 md:grid-cols-2">[m
+[32m+[m[32m            <div>[m
+[32m+[m[32m              <label className="mb-1.5 block text-xs font-semibold text-slate-300">Ориентир по голосу</label>[m
+[32m+[m[32m              <textarea value={styleDescription} onChange={(event) => setStyleDescription(event.target.value)} rows={4} placeholder="Жанр, тон, дистанция, ограничения…" className="w-full rounded-lg border border-slate-800 bg-slate-950 p-3 text-xs text-slate-200 outline-none focus:border-emerald-600" />[m
+[32m+[m[32m            </div>[m
+[32m+[m[32m            <div>[m
+[32m+[m[32m              <label className="mb-1.5 block text-xs font-semibold text-slate-300">Нельзя менять</label>[m
+[32m+[m[32m              <textarea value={protectedTermsText} onChange={(event) => setProtectedTermsText(event.target.value)} rows={4} placeholder="Имена, предметы и термины — через запятую" className="w-full rounded-lg border border-slate-800 bg-slate-950 p-3 text-xs text-slate-200 outline-none focus:border-emerald-600" />[m
+[32m+[m[32m            </div>[m
+[32m+[m[32m          </div>[m
+[32m+[m
+[32m+[m[32m          {voiceSheet ? <VoiceSheetSummary voiceSheet={voiceSheet} /> : ([m
+[32m+[m[32m            <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/20 p-3 text-xs leading-relaxed text-slate-500">Постройте паспорт, чтобы редактор мог учитывать характерные ритм, лексику и границы вашего голоса.</div>[m
+[32m+[m[32m          )}[m
+[32m+[m
+[32m+[m[32m          {status && ([m
+[32m+[m[32m            <div className="flex gap-2 rounded-lg border border-slate-700 bg-slate-900/70 p-3 text-xs text-slate-300">[m
+[32m+[m[32m              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />[m
+[32m+[m[32m              <span>{status}</span>[m
+[32m+[m[32m            </div>[m
+[32m+[m[32m          )}[m
+[32m+[m[32m        </div>[m
+[32m+[m
+[32m+[m[32m        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800 bg-slate-950/30 px-6 py-4">[m
+[32m+[m[32m          <button type="button" onClick={() => { void clearProfile(); }} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold text-red-400 hover:bg-red-950/30">[m
+[32m+[m[32m            <Trash2 className="h-3.5 w-3.5" />[m
+[32m+[m[32m            Удалить профиль[m
+[32m+[m[32m          </button>[m
+[32m+[m[32m          <div className="flex flex-wrap gap-2">[m
+[32m+[m[32m            <button type="button" onClick={() => { void saveProfile(); }} disabled={saving} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50">[m
+[32m+[m[32m              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}[m
+[32m+[m[32m              Сохранить[m
+[32m+[m[32m            </button>[m
+[32m+[m[32m            <button type="button" onClick={() => { void buildVoiceSheet(); }} disabled={loading || !canBuild} className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-45">[m
+[32m+[m[32m              {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Fingerprint className="h-3.5 w-3.5" />}[m
+[32m+[m[32m              Построить паспорт[m
+[32m+[m[32m            </button>[m
+[32m+[m[32m          </div>[m
+[32m+[m[32m        </div>[m
+[32m+[m[32m      </div>[m
+[32m+[m[32m    </div>[m
+[32m+[m[32m  );[m
+[32m+[m[32m}[m
+[1mdiff --git a/src/components/BookPanel.tsx b/src/components/BookPanel.tsx[m
+[1mnew file mode 100644[m
+[1mindex 0000000..fbdb448[m
+[1m--- /dev/null[m
+[1m+++ b/src/components/BookPanel.tsx[m
+[36m@@ -0,0 +1,94 @@[m
+[32m+[m[32mimport React, { useState } from "react";[m
+[32m+[m[32mimport { BookOpen, Database, Globe2, Users } from "lucide-react";[m
+[32m+[m[32mimport type { Story, Character, WorldRule } from "../types";[m
+[32m+[m[32mimport CharacterManager from "./CharacterManager";[m
+[32m+[m[32mimport WorldBuilder from "./WorldBuilder";[m
+[32m+[m[32mimport CodexPanel from "./CodexPanel";[m
+[32m+[m
+[32m+[m[32mtype BookSection = "characters" | "world" | "codex";[m
+[32m+[m
+[32m+[m[32minterface BookPanelProps {[m
+[32m+[m[32m  story: Story;[m
+[32m+[m[32m  onUpdateCharacters: (characters: Character[]) => void;[m
+[32m+[m[32m  onUpdateWorldRules: (rules: WorldRule[]) => void;[m
+[32m+[m[32m  selectedModel?: string;[m
+[32m+[m[32m  llmProvider?: "auto" | "gemini" | "nvidia" | "groq" | "openrouter";[m
+[32m+[m[32m  llmApiFields?: Record<string, unknown>;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mconst sections: Array<{ id: BookSection; label: string; description: string; icon: typeof Users }> = [[m
+[32m+[m[32m  { id: "characters", label: "Персонажи", description: "Действующие лица и их мотивация", icon: Users },[m
+[32m+[m[32m  { id: "world", label: "Лор", description: "Правила мира, места и факты", icon: Globe2 },[m
+[32m+[m[32m  { id: "codex", label: "Кодекс", description: "Поиск по заметкам и справочнику", icon: Database },[m
+[32m+[m[32m];[m
+[32m+[m
+[32m+[m[32mexport default function BookPanel({[m
+[32m+[m[32m  story,[m
+[32m+[m[32m  onUpdateCharacters,[m
+[32m+[m[32m  onUpdateWorldRules,[m
+[32m+[m[32m  selectedModel,[m
+[32m+[m[32m  llmProvider = "auto",[m
+[32m+[m[32m  llmApiFields,[m
+[32m+[m[32m}: BookPanelProps) {[m
+[32m+[m[32m  const [activeSection, setActiveSection] = useState<BookSection>("characters");[m
+[32m+[m
+[32m+[m[32m  return ([m
+[32m+[m[32m    <div className="flex h-full flex-col rounded-xl border border-slate-800 bg-slate-900/50 overflow-hidden" id="book-panel">[m
+[32m+[m[32m      <div className="border-b border-slate-800 bg-slate-950/40 px-4 py-3">[m
+[32m+[m[32m        <div className="flex items-center gap-2">[m
+[32m+[m[32m          <div className="rounded-lg bg-amber-950/40 p-1.5 text-amber-300">[m
+[32m+[m[32m            <BookOpen className="h-4 w-4" />[m
+[32m+[m[32m          </div>[m
+[32m+[m[32m          <div>[m
+[32m+[m[32m            <h2 className="text-sm font-bold text-slate-100">Книга</h2>[m
+[32m+[m[32m            <p className="text-[10px] text-slate-400">Материалы и канон вашей истории в одном месте</p>[m
+[32m+[m[32m          </div>[m
+[32m+[m[32m        </div>[m
+[32m+[m[32m        <div className="mt-3 grid grid-cols-3 gap-1 rounded-xl border border-slate-800 bg-slate-950/45 p-1">[m
+[32m+[m[32m          {sections.map((section) => {[m
+[32m+[m[32m            const Icon = section.icon;[m
+[32m+[m[32m            const active = activeSection === section.id;[m
+[32m+[m[32m            return ([m
+[32m+[m[32m              <button[m
+[32m+[m[32m                key={section.id}[m
+[32m+[m[32m                type="button"[m
+[32m+[m[32m                onClick={() => setActiveSection(section.id)}[m
+[32m+[m[32m                title={section.description}[m
+[32m+[m[32m                className={`flex min-w-0 items-center justify-center gap-1 rounded-lg px-1.5 py-2 text-[10px] font-semibold transition-colors ${[m
+[32m+[m[32m                  active[m
+[32m+[m[32m                    ? "bg-slate-800 text-slate-100 shadow-sm"[m
+[32m+[m[32m                    : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"[m
+[32m+[m[32m                }`}[m
+[32m+[m[32m              >[m
+[32m+[m[32m                <Icon className="h-3.5 w-3.5 shrink-0" />[m
+[32m+[m[32m                <span className="truncate">{section.label}</span>[m
+[32m+[m[32m              </button>[m
+[32m+[m[32m            );[m
+[32m+[m[32m          })}[m
+[32m+[m[32m        </div>[m
+[32m+[m[32m      </div>[m
+[32m+[m
+[32m+[m[32m      <div className="min-h-0 flex-1 overflow-hidden p-4">[m
+[32m+[m[32m        {activeSection === "characters" && ([m
+[32m+[m[32m          <CharacterManager[m
+[32m+[m[32m            story={story}[m
+[32m+[m[32m            onUpdateCharacters={onUpdateCharacters}[m
+[32m+[m[32m            selectedModel={selectedModel}[m
+[32m+[m[32m            llmProvider={llmProvider}[m
+[32m+[m[32m            llmApiFields={llmApiFields}[m
+[32m+[m[32m          />[m
+[32m+[m[32m        )}[m
+[32m+[m[32m        {activeSection === "world" && ([m
+[32m+[m[32m          <WorldBuilder[m
+[32m+[m[32m            story={story}[m
+[32m+[m[32m            onUpdateWorldRules={onUpdateWorldRules}[m
+[32m+[m[32m            selectedModel={selectedModel}[m
+[32m+[m[32m            llmProvider={llmProvider}[m
+[32m+[m[32m            llmApiFields={llmApiFields}[m
+[32m+[m[32m          />[m
+[32m+[m[32m        )}[m
+[32m+[m[32m        {activeSection === "codex" && <CodexPanel story={story} />}[m
+[32m+[m[32m      </div>[m
+[32m+[m[32m    </div>[m
+[32m+[m[32m  );[m
+[32m+[m[32m}[m
+[1mdiff --git a/src/components/ChapterReadinessPanel.tsx b/src/components/ChapterReadinessPanel.tsx[m
+[1mnew file mode 100644[m
+[1mindex 0000000..e0bae78[m
+[1m--- /dev/null[m
+[1m+++ b/src/components/ChapterReadinessPanel.tsx[m
+[36m@@ -0,0 +1,346 @@[m
+[32m+[m[32mimport React, { useEffect, useMemo, useState } from "react";[m
+[32m+[m[32mimport {[m
+[32m+[m[32m  AlertCircle,[m
+[32m+[m[32m  CheckCircle2,[m
+[32m+[m[32m  ChevronRight,[m
+[32m+[m[32m  ClipboardCheck,[m
+[32m+[m[32m  FileCheck2,[m
+[32m+[m[32m  Loader2,[m
+[32m+[m[32m  ShieldCheck,[m
+[32m+[m[32m} from "lucide-react";[m
+[32m+[m[32mimport { Chapter, Story } from "../types";[m
+[32m+[m[32mimport { canonDossier, findPreviousCanonChapter } from "../lib/chapterContext";[m
+[32m+[m
+[32m+[m[32mtype BriefField = "goal" | "change" | "emotion" | "protectedFacts" | "effect";[m
+[32m+[m
+[32m+[m[32mtype EditorialBrief = Record<BriefField, string>;[m
+[32m+[m
+[32m+[m[32mtype ReviewCheck = {[m
+[32m+[m[32m  title: string;[m
+[32m+[m[32m  status: "ok" | "attention" | "missing";[m
+[32m+[m[32m  note: string;[m
+[32m+[m[32m};[m
+[32m+[m
+[32m+[m[32mtype ReviewRisk = {[m
+[32m+[m[32m  level: "high" | "medium" | "low";[m
+[32m+[m[32m  title: string;[m
+[32m+[m[32m  explanation: string;[m
+[32m+[m[32m  suggestion: string;[m
+[32m+[m[32m};[m
+[32m+[m
+[32m+[m[32mtype EditorialReview = {[m
+[32m+[m[32m  readiness: string;[m
+[32m+[m[32m  summary: string;[m
+[32m+[m[32m  checks: ReviewCheck[];[m
+[32m+[m[32m  risks: ReviewRisk[];[m
+[32m+[m[32m  nextStep: string;[m
+[32m+[m[32m};[m
+[32m+[m
+[32m+[m[32minterface ChapterReadinessPanelProps {[m
+[32m+[m[32m  story: Story;[m
+[32m+[m[32m  activeChapter?: Chapter;[m
+[32m+[m[32m  currentDraft: string;[m
+[32m+[m[32m  selectedModel?: string;[m
+[32m+[m[32m  llmProvider?: "auto" | "gemini" | "nvidia" | "groq" | "openrouter";[m
+[32m+[m[32m  llmApiFields?: Record<string, unknown>;[m
+[32m+[m[32m  hasAuthorVoice: boolean;[m
+[32m+[m[32m  onOpenAuthorEditor: () => void;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mconst EMPTY_BRIEF: EditorialBrief = {[m
+[32m+[m[32m  goal: "",[m
+[32m+[m[32m  change: "",[m
+[32m+[m[32m  emotion: "",[m
+[32m+[m[32m  protectedFacts: "",[m
+[32m+[m[32m  effect: "",[m
+[32m+[m[32m};[m
+[32m+[m
+[32m+[m[32mconst BRIEF_FIELDS: Array<{ id: BriefField; title: string; placeholder: string }> = [[m
+[32m+[m[32m  {[m
+[32m+[m[32m    id: "goal",[m
+[32m+[m[32m    title: "Цель сцены",[m
+[32m+[m[32m    placeholder: "Например: героиня получает доступ к архиву.",[m
+[32m+[m[32m  },[m
+[32m+[m[32m  {[m
+[32m+[m[32m    id: "change",[m
+[32m+[m[32m    title: "Что должно измениться к финалу",[m
+[32m+[m[32m    placeholder: "Например: она понимает, что архив ведёт к её семье.",[m
+[32m+[m[32m  },[m
+[32m+[m[32m  {[m
+[32m+[m[32m    id: "emotion",[m
+[32m+[m[32m    title: "Эмоциональный поворот",[m
+[32m+[m[32m    placeholder: "Например: от любопытства к панике.",[m
+[32m+[m[32m  },[m
+[32m+[m[32m  {[m
+[32m+[m[32m    id: "protectedFacts",[m
+[32m+[m[32m    title: "Нельзя менять",[m
+[32m+[m[32m    placeholder: "Имена, факты, предметы и ограничения именно этой сцены.",[m
+[32m+[m[32m  },[m
+[32m+[m[32m  {[m
+[32m+[m[32m    id: "effect",[m
+[32m+[m[32m    title: "Нужный эффект",[m
+[32m+[m[32m    placeholder: "Например: тихий клиффхэнгер без прямого объяснения.",[m
+[32m+[m[32m  },[m
+[32m+[m[32m];[m
+[32m+[m
+[32m+[m[32mfunction storageKey(storyId?: string, chapterId?: string) {[m
+[32m+[m[32m  return `writers_studio_editorial_brief_${storyId || "story"}_${chapterId || "chapter"}`;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunction loadBrief(storyId?: string, chapterId?: string): EditorialBrief {[m
+[32m+[m[32m  try {[m
+[32m+[m[32m    const raw = localStorage.getItem(storageKey(storyId, chapterId));[m
+[32m+[m[32m    if (!raw) return EMPTY_BRIEF;[m
+[32m+[m[32m    const parsed = JSON.parse(raw);[m
+[32m+[m[32m    return { ...EMPTY_BRIEF, ...parsed };[m
+[32m+[m[32m  } catch {[m
+[32m+[m[32m    return EMPTY_BRIEF;[m
+[32m+[m[32m  }[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunction statusIcon(status: "ok" | "attention" | "missing") {[m
+[32m+[m[32m  if (status === "ok") return <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />;[m
+[32m+[m[32m  return <AlertCircle className={`w-3.5 h-3.5 shrink-0 ${status === "missing" ? "text-red-400" : "text-amber-400"}`} />;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunction riskClasses(level: ReviewRisk["level"]) {[m
+[32m+[m[32m  if (level === "high") return "border-red-900/60 bg-red-950/25 text-red-200";[m
+[32m+[m[32m  if (level === "medium") return "border-amber-900/60 bg-amber-950/20 text-amber-100";[m
+[32m+[m[32m  return "border-slate-800 bg-slate-950/50 text-slate-300";[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mexport default function ChapterReadinessPanel({[m
+[32m+[m[32m  story,[m
+[32m+[m[32m  activeChapter,[m
+[32m+[m[32m  currentDraft,[m
+[32m+[m[32m  selectedModel,[m
+[32m+[m[32m  llmProvider = "auto",[m
+[32m+[m[32m  llmApiFields,[m
+[32m+[m[32m  hasAuthorVoice,[m
+[32m+[m[32m  onOpenAuthorEditor,[m
+[32m+[m[32m}: ChapterReadinessPanelProps) {[m
+[32m+[m[32m  const [brief, setBrief] = useState<EditorialBrief>(() => loadBrief(story.id, activeChapter?.id));[m
+[32m+[m[32m  const [review, setReview] = useState<EditorialReview | null>(null);[m
+[32m+[m[32m  const [loading, setLoading] = useState(false);[m
+[32m+[m[32m  const [error, setError] = useState("");[m
+[32m+[m
+[32m+[m[32m  const previousChapter = useMemo([m
+[32m+[m[32m    () => activeChapter ? findPreviousCanonChapter(story.chapters || [], activeChapter) : null,[m
+[32m+[m[32m    [activeChapter, story.chapters],[m
+[32m+[m[32m  );[m
+[32m+[m[32m  const worldBible = story.worldBible || story.worldRules?.map((rule) => `[${rule.title}] ${rule.content}`).join("\n\n") || "";[m
+[32m+[m[32m  const bookPlan = story.bookPlan || "";[m
+[32m+[m[32m  const canonicalBrief = activeChapter ? canonDossier(story, activeChapter, previousChapter) : "";[m
+[32m+[m
+[32m+[m[32m  useEffect(() => {[m
+[32m+[m[32m    setBrief(loadBrief(story.id, activeChapter?.id));[m
+[32m+[m[32m    setReview(null);[m
+[32m+[m[32m    setError("");[m
+[32m+[m[32m  }, [story.id, activeChapter?.id]);[m
+[32m+[m
+[32m+[m[32m  const preflight = [[m
+[32m+[m[32m    {[m
+[32m+[m[32m      title: "Текст главы",[m
+[32m+[m[32m      detail: currentDraft.trim() ? `${currentDraft.trim().length.toLocaleString("ru-RU")} знаков` : "Нет текста для проверки",[m
+[32m+[m[32m      status: currentDraft.trim() ? "ok" : "missing",[m
+[32m+[m[32m    },[m
+[32m+[m[32m    {[m
+[32m+[m[32m      title: "Синопсис",[m
+[32m+[m[32m      detail: activeChapter?.summary?.trim() ? "Учтён" : "Не заполнен",[m
+[32m+[m[32m      status: activeChapter?.summary?.trim() ? "ok" : "attention",[m
+[32m+[m[32m    },[m
+[32m+[m[32m    {[m
+[32m+[m[32m      title: "Предыдущая глава",[m
+[32m+[m[32m      detail: previousChapter?.content?.trim() ? `«${previousChapter.title}»` : "Нет доступного контекста",[m
+[32m+[m[32m      status: previousChapter?.content?.trim() ? "ok" : "attention",[m
+[32m+[m[32m    },[m
+[32m+[m[32m    {[m
+[32m+[m[32m      title: "Библия мира",[m
+[32m+[m[32m      detail: worldBible.trim() ? "Учтена" : "Не заполнена",[m
+[32m+[m[32m      status: worldBible.trim() ? "ok" : "attention",[m
+[32m+[m[32m    },[m
+[32m+[m[32m    {[m
+[32m+[m[32m      title: "План книги",[m
+[32m+[m[32m      detail: bookPlan.trim() ? "Учтён" : "Не заполнен",[m
+[32m+[m[32m      status: bookPlan.trim() ? "ok" : "attention",[m
+[32m+[m[32m    },[m
+[32m+[m[32m    {[m
+[32m+[m[32m      title: "Голос автора",[m
+[32m+[m[32m      detail: hasAuthorVoice ? "Есть образец" : "Проверка возможна без образца",[m
+[32m+[m[32m      status: hasAuthorVoice ? "ok" : "attention",[m
+[32m+[m[32m    },[m
+[32m+[m[32m  ] as Array<{ title: string; detail: string; status: "ok" | "attention" | "missing" }>;[m
+[32m+[m
+[32m+[m[32m  const updateBrief = (field: BriefField, value: string) => {[m
+[32m+[m[32m    setBrief((previous) => {[m
+[32m+[m[32m      const next = { ...previous, [field]: value };[m
+[32m+[m[32m      try {[m
+[32m+[m[32m        localStorage.setItem(storageKey(story.id, activeChapter?.id), JSON.stringify(next));[m
+[32m+[m[32m      } catch {[m
+[32m+[m[32m        // Бриф остаётся доступным в рамках текущей сессии, даже если локальное хранилище недоступно.[m
+[32m+[m[32m      }[m
+[32m+[m[32m      return next;[m
+[32m+[m[32m    });[m
+[32m+[m[32m  };[m
+[32m+[m
+[32m+[m[32m  const runReview = async () => {[m
+[32m+[m[32m    if (!activeChapter || !currentDraft.trim()) {[m
+[32m+[m[32m      setError("Добавьте текст текущей главы — тогда можно будет сформировать редакторскую проверку.");[m
+[32m+[m[32m      return;[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    setLoading(true);[m
+[32m+[m[32m    setError("");[m
+[32m+[m[32m    setReview(null);[m
+[32m+[m[32m    try {[m
+[32m+[m[32m      const response = await fetch("/api/writer/ai", {[m
+[32m+[m[32m        method: "POST",[m
+[32m+[m[32m        headers: { "Content-Type": "application/json" },[m
+[32m+[m[32m        body: JSON.stringify({[m
+[32m+[m[32m          action: "editorial_review",[m
+[32m+[m[32m          text: currentDraft,[m
+[32m+[m[32m          title: story.title,[m
+[32m+[m[32m          genre: story.genre,[m
+[32m+[m[32m          description: story.description,[m
+[32m+[m[32m          currentChapterTitle: activeChapter.title,[m
+[32m+[m[32m          currentChapterSummary: activeChapter.summary || "",[m
+[32m+[m[32m          previousChapter: previousChapter?.content || "",[m
+[32m+[m[32m          worldBible,[m
+[32m+[m[32m          bookPlan,[m
+[32m+[m[32m          canonDossier: canonicalBrief,[m
+[32m+[m[32m          editorialBrief: brief,[m
+[32m+[m[32m          hasAuthorVoice,[m
+[32m+[m[32m          ...(llmApiFields || { model: selectedModel, llmProvider }),[m
+[32m+[m[32m        }),[m
+[32m+[m[32m      });[m
+[32m+[m[32m      const data = await response.json();[m
+[32m+[m[32m      if (!response.ok) throw new Error(data.error || "Не удалось выполнить редакторскую проверку.");[m
+[32m+[m[32m      if (!data.review) throw new Error("Сервис вернул неполный редакторский отчёт. Попробуйте ещё раз.");[m
+[32m+[m[32m      setReview(data.review as EditorialReview);[m
+[32m+[m[32m    } catch (reviewError: any) {[m
+[32m+[m[32m      setError(reviewError.message || "Не удалось выполнить редакторскую проверку.");[m
+[32m+[m[32m    } finally {[m
+[32m+[m[32m      setLoading(false);[m
+[32m+[m[32m    }[m
+[32m+[m[32m  };[m
+[32m+[m
+[32m+[m[32m  return ([m
+[32m+[m[32m    <div className="space-y-4" id="chapter-readiness-panel">[m
+[32m+[m[32m      <div className="rounded-xl border border-violet-900/50 bg-violet-950/20 p-3.5 space-y-2">[m
+[32m+[m[32m        <div className="flex items-center gap-2 text-violet-200">[m
+[32m+[m[32m          <ClipboardCheck className="w-4 h-4" />[m
+[32m+[m[32m          <h3 className="text-xs font-bold">Подготовить главу к следующему шагу</h3>[m
+[32m+[m[32m        </div>[m
+[32m+[m[32m        <p className="text-[11px] leading-relaxed text-slate-300">[m
+[32m+[m[32m          Внутренний редактор сверит главу с вашим сюжетом, лором и брифом. Он не меняет текст автоматически: сначала показывает, что проверить и что усилить.[m
+[32m+[m[32m        </p>[m
+[32m+[m[32m      </div>[m
+[32m+[m
+[32m+[m[32m      <section className="space-y-2" aria-label="Предполётная проверка">[m
+[32m+[m[32m        <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">[m
+[32m+[m[32m          <ShieldCheck className="w-3.5 h-3.5" />[m
+[32m+[m[32m          Что будет учтено[m
+[32m+[m[32m        </div>[m
+[32m+[m[32m        <div className="grid grid-cols-2 gap-1.5">[m
+[32m+[m[32m          {preflight.map((item) => ([m
+[32m+[m[32m            <div key={item.title} className="rounded-lg border border-slate-800 bg-slate-950/45 p-2 text-[10px]">[m
+[32m+[m[32m              <div className="flex items-center gap-1.5 text-slate-200">[m
+[32m+[m[32m                {statusIcon(item.status)}[m
+[32m+[m[32m                <span className="font-medium truncate">{item.title}</span>[m
+[32m+[m[32m              </div>[m
+[32m+[m[32m              <p className="mt-1 truncate text-slate-500" title={item.detail}>{item.detail}</p>[m
+[32m+[m[32m            </div>[m
+[32m+[m[32m          ))}[m
+[32m+[m[32m        </div>[m
+[32m+[m[32m      </section>[m
+[32m+[m
+[32m+[m[32m      <section className="space-y-2" aria-label="Редакторский бриф">[m
+[32m+[m[32m        <div className="flex items-center justify-between gap-2">[m
+[32m+[m[32m          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Редакторский бриф</span>[m
+[32m+[m[32m          <span className="text-[10px] text-slate-500">Необязательно, сохраняется для этой главы</span>[m
+[32m+[m[32m        </div>[m
+[32m+[m[32m        <p className="text-[10px] leading-relaxed text-slate-500">[m
+[32m+[m[32m          Несколько коротких ориентиров помогают проверить именно ваш замысел, а не усреднённую версию сцены.[m
+[32m+[m[32m        </p>[m
+[32m+[m[32m        <div className="space-y-2">[m
+[32m+[m[32m          {BRIEF_FIELDS.map((field) => ([m
+[32m+[m[32m            <label key={field.id} className="block space-y-1">[m
+[32m+[m[32m              <span className="text-[10px] text-slate-400">{field.title}</span>[m
+[32m+[m[32m              <textarea[m
+[32m+[m[32m                value={brief[field.id]}[m
+[32m+[m[32m                onChange={(event) => updateBrief(field.id, event.target.value)}[m
+[32m+[m[32m                rows={field.id === "protectedFacts" ? 2 : 1}[m
+[32m+[m[32m                placeholder={field.placeholder}[m
+[32m+[m[32m                className="w-full resize-y rounded-lg border border-slate-800 bg-slate-950 p-2 text-[11px] text-slate-200 outline-none focus:border-violet-600"[m
+[32m+[m[32m              />[m
+[32m+[m[32m            </label>[m
+[32m+[m[32m          ))}[m
+[32m+[m[32m        </div>[m
+[32m+[m[32m      </section>[m
+[32m+[m
+[32m+[m[32m      <button[m
+[32m+[m[32m        type="button"[m
+[32m+[m[32m        onClick={runReview}[m
+[32m+[m[32m        disabled={loading || !currentDraft.trim()}[m
+[32m+[m[32m        className="w-full rounded-lg bg-gradient-to-r from-violet-700 to-blue-700 py-2.5 text-xs font-bold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-40"[m
+[32m+[m[32m        id="chapter-readiness-run-btn"[m
+[32m+[m[32m      >[m
+[32m+[m[32m        {loading ? <Loader2 className="inline h-4 w-4 animate-spin mr-1" /> : <FileCheck2 className="inline h-4 w-4 mr-1" />}[m
+[32m+[m[32m        {loading ? "Проверяем главу…" : "Сформировать редакторское письмо"}[m
+[32m+[m[32m      </button>[m
+[32m+[m
+[32m+[m[32m      {error && <div className="rounded-lg border border-red-900/60 bg-red-950/25 p-2.5 text-[11px] text-red-300">{error}</div>}[m
+[32m+[m
+[32m+[m[32m      {review && ([m
+[32m+[m[32m        <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/50 p-3" id="chapter-readiness-result">[m
+[32m+[m[32m          <div className="flex items-start gap-2">[m
+[32m+[m[32m            <FileCheck2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />[m
+[32m+[m[32m            <div>[m
+[32m+[m[32m              <p className="text-xs font-bold text-slate-100">{review.readiness || "Редакторская проверка завершена"}</p>[m
+[32m+[m[32m              <p className="mt-1 text-[11px] leading-relaxed text-slate-300">{review.summary}</p>[m
+[32m+[m[32m            </div>[m
+[32m+[m[32m          </div>[m
+[32m+[m
+[32m+[m[32m          {review.checks?.length > 0 && ([m
+[32m+[m[32m            <div className="space-y-1.5 border-t border-slate-800 pt-2.5">[m
+[32m+[m[32m              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Что проверено</p>[m
+[32m+[m[32m              {review.checks.map((check, index) => ([m
+[32m+[m[32m                <div key={`${check.title}-${index}`} className="flex items-start gap-1.5 text-[11px] text-slate-300">[m
+[32m+[m[32m                  {statusIcon(check.status)}[m
+[32m+[m[32m                  <p><strong className="font-semibold text-slate-200">{check.title}.</strong> {check.note}</p>[m
+[32m+[m[32m                </div>[m
+[32m+[m[32m              ))}[m
+[32m+[m[32m            </div>[m
+[32m+[m[32m          )}[m
+[32m+[m
+[32m+[m[32m          {review.risks?.length > 0 && ([m
+[32m+[m[32m            <div className="space-y-2 border-t border-slate-800 pt-2.5">[m
+[32m+[m[32m              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Ручная проверка автора</p>[m
+[32m+[m[32m              {review.risks.map((risk, index) => ([m
+[32m+[m[32m                <div key={`${risk.title}-${index}`} className={`rounded-lg border p-2 text-[10px] ${riskClasses(risk.level)}`}>[m
+[32m+[m[32m                  <p className="font-semibold">{risk.title}</p>[m
+[32m+[m[32m                  <p className="mt-0.5 leading-relaxed opacity-90">{risk.explanation}</p>[m
+[32m+[m[32m                  <p className="mt-1 leading-relaxed"><span className="font-semibold">Действие:</span> {risk.suggestion}</p>[m
+[32m+[m[32m                </div>[m
+[32m+[m[32m              ))}[m
+[32m+[m[32m            </div>[m
+[32m+[m[32m          )}[m
+[32m+[m
+[32m+[m[32m          <div className="rounded-lg border border-blue-900/50 bg-blue-950/20 p-2.5 text-[11px] text-blue-100">[m
+[32m+[m[32m            <p className="font-semibold text-blue-200">Следующий шаг</p>[m
+[32m+[m[32m            <p className="mt-1 leading-relaxed">{review.nextStep}</p>[m
+[32m+[m[32m          </div>[m
+[32m+[m
+[32m+[m[32m          <button[m
+[32m+[m[32m            type="button"[m
+[32m+[m[32m            onClick={onOpenAuthorEditor}[m
+[32m+[m[32m            className="w-full rounded-lg border border-emerald-800/70 bg-emerald-950/25 py-2 text-[11px] font-semibold text-emerald-300 hover:bg-emerald-950/45"[m
+[32m+[m[32m          >[m
+[32m+[m[32m            Открыть безопасную редактуру[m
+[32m+[m[32m            <ChevronRight className="inline h-3.5 w-3.5 ml-1" />[m
+[32m+[m[32m          </button>[m
+[32m+[m[32m        </section>[m
+[32m+[m[32m      )}[m
+[32m+[m[32m    </div>[m
+[32m+[m[32m  );[m
+[32m+[m[32m}[m

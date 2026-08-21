@@ -55,6 +55,7 @@ interface AuthorEditorPanelProps {
   llmProvider?: "auto" | "gemini" | "nvidia" | "groq" | "openrouter";
   llmApiFields?: Record<string, unknown>;
   onApply: (text: string, target: AuthorEditTarget) => boolean;
+  onOpenAuthorProfile?: () => void;
 }
 
 type Scope = "selection" | "chapter" | "detector";
@@ -122,6 +123,7 @@ export default function AuthorEditorPanel({
   llmProvider = "auto",
   llmApiFields,
   onApply,
+  onOpenAuthorProfile,
 }: AuthorEditorPanelProps) {
   const [sample, setSample] = useState("");
   const [sampleFileName, setSampleFileName] = useState("");
@@ -496,86 +498,35 @@ export default function AuthorEditorPanel({
 
   return (
     <div className="space-y-4" id="author-editor-panel">
-      <div className="rounded-xl border border-emerald-900/50 bg-emerald-950/20 p-3 space-y-2">
-        <div className="flex items-center gap-2 text-emerald-300">
-          <Fingerprint className="w-4 h-4" />
-          <h3 className="text-xs font-bold">Паспорт голоса книги</h3>
-        </div>
-        <textarea
-          id="author-profile-sample"
-          value={sample}
-          onChange={(event) => setSample(event.target.value)}
-          onBlur={() => {
-            if (sample.trim().length > 0) {
-              void persistProfile().then(() => {
-                setProfileStatus(
-                  sample.trim().length >= 300
-                    ? `Образец сохранён (${sample.trim().length.toLocaleString("ru-RU")} знаков) для этой книги`
-                    : `Текст сохранён, но для «Максимум» нужно ≥300 знаков (сейчас ${sample.trim().length})`,
-                );
-              }).catch(() => setProfileStatus("Не удалось сохранить образец"));
-            }
-          }}
-          rows={5}
-          placeholder="Вставьте главу, написанную автором без ИИ. Образец используется только как манера, не как источник событий."
-          className="w-full rounded-lg border border-slate-800 bg-slate-950 p-2.5 text-xs text-slate-200 outline-none focus:border-emerald-700"
-        />
-        <div className="flex gap-2">
-          <label className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-emerald-800/70 px-2 py-2 text-[11px] text-emerald-300 hover:bg-emerald-950/30">
-            <Upload className="w-3.5 h-3.5" />
-            Загрузить TXT или DOCX
-            <input
-              id="author-sample-file-input"
-              type="file"
-              accept=".txt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-              className="hidden"
-              onChange={(event) => { handleSampleFile(event.target.files?.[0]); event.currentTarget.value = ""; }}
-            />
-          </label>
-          <button onClick={clearProfile} className="rounded-lg border border-red-900/60 px-2.5 text-red-400 hover:bg-red-950/30" title="Удалить образец и паспорт">
-            <Trash2 className="w-3.5 h-3.5" />
+      <div className="rounded-xl border border-emerald-900/50 bg-emerald-950/20 p-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-emerald-300">
+              <Fingerprint className="w-4 h-4" />
+              <h3 className="text-xs font-bold">Голос автора</h3>
+            </div>
+            <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+              {sample.trim().length >= 300
+                ? voiceSheet
+                  ? "Паспорт подключён и будет учтён при бережной редактуре."
+                  : "Образец подключён. Постройте паспорт в профиле для более точной настройки."
+                : "Добавьте собственный образец, чтобы редактура сохраняла ваш голос."}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onOpenAuthorProfile}
+            className="shrink-0 rounded-lg border border-emerald-800/70 px-2.5 py-1.5 text-[10px] font-semibold text-emerald-300 hover:bg-emerald-950/40"
+          >
+            Профиль автора
           </button>
         </div>
-        {sample.trim().length > 0 && (
-          <div className="flex items-center justify-between rounded-lg bg-slate-950/60 px-2 py-1.5 text-[10px] text-slate-400">
-            <span className="truncate">
-              {sampleFileName ? `Файл: ${sampleFileName} · ` : ""}
-              {sample.trim().length.toLocaleString("ru-RU")} знаков
-              {sample.trim().length >= 300 ? " · сохранён для «Максимум»" : " · мало для «Максимум»"}
-            </span>
-            <button onClick={() => { void clearSampleOnly(); }} className="ml-2 text-red-400" title="Удалить загруженный текст">
-              <Trash2 className="w-3 h-3" />
-            </button>
+        {sample.trim().length >= 300 && (
+          <div className="mt-2 flex items-center gap-2 text-[10px] text-emerald-300">
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            <span>{sampleFileName ? `Образец: ${sampleFileName}` : `Образец: ${sample.trim().length.toLocaleString("ru-RU")} знаков`}</span>
           </div>
         )}
-        <input
-          value={styleDescription}
-          onChange={(event) => setStyleDescription(event.target.value)}
-          placeholder="Описание проекта и голоса: жанр, тон, ограничения…"
-          className="w-full rounded-lg border border-slate-800 bg-slate-950 p-2 text-xs text-slate-200 outline-none"
-        />
-        <input
-          value={protectedTermsText}
-          onChange={(event) => setProtectedTermsText(event.target.value)}
-          placeholder="Защищённые имена, предметы и термины — через запятую"
-          className="w-full rounded-lg border border-slate-800 bg-slate-950 p-2 text-xs text-slate-200 outline-none"
-        />
-        <div className="flex gap-2">
-          <button
-            id="build-author-profile-btn"
-            onClick={buildProfile}
-            disabled={profileLoading || sample.trim().length < 300}
-            className="flex-1 rounded-lg border border-emerald-800 bg-emerald-900/30 px-2 py-2 text-[11px] font-semibold text-emerald-300 disabled:opacity-40"
-          >
-            {profileLoading ? <Loader2 className="inline w-3.5 h-3.5 animate-spin mr-1" /> : <Fingerprint className="inline w-3.5 h-3.5 mr-1" />}
-            Построить паспорт
-          </button>
-          <button onClick={saveSettings} className="rounded-lg border border-slate-700 px-2 py-2 text-slate-300" title="Сохранить локально">
-            <Save className="w-3.5 h-3.5" />
-          </button>
-        </div>
-        {profileStatus && <p className="text-[10px] text-slate-400">{profileStatus}</p>}
-        {voiceSheet && <ProfileView profile={voiceSheet} />}
       </div>
 
       <div className="space-y-2">

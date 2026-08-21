@@ -3,6 +3,7 @@ import { Sparkles, Wand2, ArrowRight, Copy, Check, ChevronRight, HelpCircle, Fil
 import ReactMarkdown from "react-markdown";
 import { Story, Chapter, TextSelection, AuthorEditTarget, AuthorProfileRecord, HumanizeReport } from "../types";
 import AuthorEditorPanel from "./AuthorEditorPanel";
+import ChapterReadinessPanel from "./ChapterReadinessPanel";
 import { loadAuthorProfile, onAuthorProfileUpdated } from "../lib/authorStorage";
 import { canonDossier, findPreviousCanonChapter } from "../lib/chapterContext";
 import { HUMANIZE_DEPTHS, VOICE_PRESETS, type HumanizeDepth } from "../../server/humanStyle";
@@ -23,10 +24,11 @@ interface AIPanelProps {
   /** model + llmProvider + apiKeys из шапки */
   llmApiFields?: Record<string, unknown>;
   openAuthorRequest?: number;
+  onOpenAuthorProfile?: () => void;
 }
 
-export default function AIPanel({ story, currentDraft, selectedText, textSelection, onInsertText, onApplyAuthorEdit, activeChapter, onUpdateStoryChapters, selectedModel, llmProvider = "auto", llmApiFields, openAuthorRequest }: AIPanelProps) {
-  const [activeTool, setActiveTool] = useState<"continue" | "improve" | "author" | "brainstorm">("continue");
+export default function AIPanel({ story, currentDraft, selectedText, textSelection, onInsertText, onApplyAuthorEdit, activeChapter, onUpdateStoryChapters, selectedModel, llmProvider = "auto", llmApiFields, openAuthorRequest, onOpenAuthorProfile }: AIPanelProps) {
+  const [activeTool, setActiveTool] = useState<"continue" | "improve" | "author" | "readiness" | "brainstorm">("continue");
   useEffect(() => {
     if (openAuthorRequest) setActiveTool("author");
   }, [openAuthorRequest]);
@@ -123,12 +125,8 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
     return () => { cancelled = true; };
   }, [story.id, activeTool]);
 
-  // Синхрон с вкладкой «Автор»: образец сохраняется в IndexedDB, подхватываем сразу
-  useEffect(() => {
-    return onAuthorProfileUpdated((storyId) => {
-      if (storyId === story.id) refreshAuthorProfile();
-    });
-  }, [story.id]);
+  // Единый профиль автора может измениться из верхней панели в любой момент.
+  useEffect(() => onAuthorProfileUpdated(refreshAuthorProfile), [story.id]);
 
   // Дополняет запрос генерации данными для «очеловечивания с первого прохода»
   const applyHumanizePayload = (payload: any, excludeChapterId?: string) => {
@@ -417,47 +415,51 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
 
   return (
     <div className="flex flex-col h-full bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden" id="ai-panel-container">
-      {/* Tool Selector Tabs */}
-      <div className="flex border-b border-slate-800 bg-slate-950/40 p-1 text-xs font-medium">
+      {/* Один результат автора — одна точка входа. Детали раскрываются только после выбора действия. */}
+      <div className="grid grid-cols-4 gap-1 border-b border-slate-800 bg-slate-950/40 p-1 text-[10px] font-semibold">
         <button
-          onClick={() => { setActiveTool("continue"); setResult(""); }}
-          className={`flex-1 py-2 text-center rounded-lg transition-colors cursor-pointer ${
-            activeTool === "continue"
-              ? "bg-blue-600/25 text-blue-400 border border-blue-500/30 font-semibold"
+          type="button"
+          onClick={() => { setActiveTool("continue"); setContinueMode("whole_chapter"); setResult(""); }}
+          className={`rounded-lg px-1 py-2 transition-colors cursor-pointer ${
+            activeTool === "continue" && continueMode !== "paragraphs"
+              ? "bg-blue-600/25 text-blue-300 border border-blue-500/30"
               : "text-slate-400 hover:text-slate-200"
           }`}
         >
-          Продолжить сюжет
+          Написать
         </button>
         <button
+          type="button"
+          onClick={() => { setActiveTool("continue"); setContinueMode("paragraphs"); setResult(""); }}
+          className={`rounded-lg px-1 py-2 transition-colors cursor-pointer ${
+            activeTool === "continue" && continueMode === "paragraphs"
+              ? "bg-blue-600/25 text-blue-300 border border-blue-500/30"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          Продолжить
+        </button>
+        <button
+          type="button"
           onClick={() => { setActiveTool("improve"); setResult(""); }}
-          className={`flex-1 py-2 text-center rounded-lg transition-colors cursor-pointer ${
-            activeTool === "improve"
-              ? "bg-blue-600/25 text-blue-400 border border-blue-500/30 font-semibold"
+          className={`rounded-lg px-1 py-2 transition-colors cursor-pointer ${
+            activeTool === "improve" || activeTool === "author"
+              ? "bg-emerald-600/20 text-emerald-300 border border-emerald-500/30"
               : "text-slate-400 hover:text-slate-200"
           }`}
         >
-          Улучшить стиль
+          Редактировать
         </button>
         <button
-          onClick={() => { setActiveTool("author"); setResult(""); }}
-          className={`flex-1 py-2 text-center rounded-lg transition-colors cursor-pointer ${
-            activeTool === "author"
-              ? "bg-emerald-600/20 text-emerald-300 border border-emerald-500/30 font-semibold"
+          type="button"
+          onClick={() => { setActiveTool("readiness"); setResult(""); }}
+          className={`rounded-lg px-1 py-2 transition-colors cursor-pointer ${
+            activeTool === "readiness"
+              ? "bg-violet-600/25 text-violet-300 border border-violet-500/30"
               : "text-slate-400 hover:text-slate-200"
           }`}
         >
-          Голос автора
-        </button>
-        <button
-          onClick={() => { setActiveTool("brainstorm"); setResult(""); }}
-          className={`flex-1 py-2 text-center rounded-lg transition-colors cursor-pointer ${
-            activeTool === "brainstorm"
-              ? "bg-blue-600/25 text-blue-400 border border-blue-500/30 font-semibold"
-              : "text-slate-400 hover:text-slate-200"
-          }`}
-        >
-          Генератор идей
+          Проверить
         </button>
       </div>
 
@@ -755,6 +757,14 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
                 className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded p-2 text-xs text-slate-200 outline-none"
               />
             </div>
+            <button
+              type="button"
+              onClick={() => { setActiveTool("author"); setResult(""); }}
+              className="w-full rounded-lg border border-emerald-900/60 bg-emerald-950/20 px-3 py-2 text-left text-[11px] text-emerald-200 hover:bg-emerald-950/35"
+            >
+              <span className="font-semibold">Нужна бережная редактура?</span>
+              <span className="ml-1 text-emerald-300/70">Покажу diff и проверю голос, факты и защищённые термины.</span>
+            </button>
           </div>
         )}
 
@@ -808,6 +818,20 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
             llmProvider={llmProvider}
             llmApiFields={llmApiFields}
             onApply={onApplyAuthorEdit}
+            onOpenAuthorProfile={onOpenAuthorProfile}
+          />
+        )}
+
+        {activeTool === "readiness" && (
+          <ChapterReadinessPanel
+            story={story}
+            activeChapter={activeChapter}
+            currentDraft={currentDraft}
+            selectedModel={selectedModel}
+            llmProvider={llmProvider}
+            llmApiFields={llmApiFields}
+            hasAuthorVoice={hasAuthorSample}
+            onOpenAuthorEditor={() => setActiveTool("author")}
           />
         )}
 
@@ -855,7 +879,7 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
                         disabled={locked}
                         title={
                           locked
-                            ? "Нужен образец стиля: загрузите текст во вкладке «Автор» или напишите главу в книге"
+                            ? "Нужен образец стиля: откройте «Профиль автора» или напишите главу в книге"
                             : depth.description
                         }
                         onClick={() => setHumanizeDepth(depthId)}
@@ -875,13 +899,13 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
                   <p className="text-[10px] text-emerald-400 flex items-center gap-1">
                     <CheckCircle2 className="w-3 h-3" />
                     {authorProfile?.voiceSheet
-                      ? "Пишем голосом автора — по образцу из вкладки «Автор»"
-                      : "Образец из вкладки «Автор» — манера будет подтянута"}
+                      ? "Голос автора подключён — паспорт будет учтён в редактуре"
+                      : "Образец автора подключён — манера будет учтена"}
                   </p>
                 ) : sampleSource === "chapters" ? (
                   <p className="text-[10px] text-emerald-400 flex items-center gap-1">
                     <CheckCircle2 className="w-3 h-3" />
-                    Образец стиля: уже написанные главы книги (можно уточнить во вкладке «Автор»)
+                    Образец стиля: уже написанные главы книги (можно уточнить в профиле автора)
                   </p>
                 ) : (
                   <div className="space-y-1">
@@ -895,14 +919,14 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
                       ))}
                     </select>
                     <p className="text-[10px] text-amber-400/90">
-                      «Максимум» нужен образец стиля (≥300 знаков): вкладка «Автор» (TXT/Word) или любая уже написанная глава.
+                      «Максимум» нужен образец стиля (≥300 знаков): профиль автора (TXT/Word) или любая уже написанная глава.
                     </p>
                     <button
                       type="button"
-                      onClick={() => setActiveTool("author")}
+                      onClick={onOpenAuthorProfile}
                       className="text-[10px] text-emerald-400 hover:text-emerald-300 underline cursor-pointer"
                     >
-                      Открыть вкладку «Автор» и загрузить образец
+                      Открыть профиль автора
                     </button>
                   </div>
                 )}
@@ -912,7 +936,7 @@ export default function AIPanel({ story, currentDraft, selectedText, textSelecti
         )}
 
         {/* Action / Stop buttons */}
-        {activeTool === "author" ? null : loading ? (
+        {activeTool === "author" || activeTool === "readiness" ? null : loading ? (
           <div className="space-y-2">
             <div className="w-full py-2.5 bg-slate-800/80 border border-slate-700 text-slate-200 rounded-lg text-xs font-semibold flex items-center justify-center gap-2">
               <div className="w-3.5 h-3.5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />

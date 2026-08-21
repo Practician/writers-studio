@@ -393,6 +393,7 @@ app.post("/api/writer/ai", async (req, res) => {
     chapterCandidates,
     detectorSegments,
     adaptiveStyleGuidance,
+    editorialBrief,
     llmProvider: llmProviderRaw,
     apiKeys,
   } = req.body;
@@ -456,6 +457,47 @@ ${text || ""}
 
 Provide ONLY the revised text. Do not provide any commentary, headers, or "before/after" comparisons. Just output the refined passage itself.`;
 
+    } else if (action === "editorial_review") {
+      systemInstruction = "Вы — внимательный литературный редактор. Вы составляете краткий, доказательный отчёт по предоставленной главе. Не переписывайте текст и не выдумывайте факты: указывайте только наблюдаемые риски, связанные с текстом, каноном и брифом автора.";
+      prompt = `Подготовьте внутреннее редакторское письмо к текущей главе на русском языке.
+
+КНИГА:
+- Название: «${title || "Без названия"}»
+- Жанр: ${genre || "Не указан"}
+- Описание: ${description || "Не указано"}
+
+ТЕКУЩАЯ ГЛАВА:
+- Название: ${req.body.currentChapterTitle || "Без названия"}
+- Синопсис: ${req.body.currentChapterSummary || "Не задан"}
+
+ТЕКСТ ГЛАВЫ:
+"""
+${text || ""}
+"""
+
+${req.body.previousChapter ? `ПРЕДЫДУЩАЯ ГЛАВА:\n"""\n${req.body.previousChapter}\n"""` : "ПРЕДЫДУЩАЯ ГЛАВА: нет — это начало книги или контекст не заполнен."}
+
+${req.body.canonDossier ? `ЗАМОК КАНОНА:\n"""\n${req.body.canonDossier}\n"""` : "ЗАМОК КАНОНА: не сформирован."}
+
+${worldBible ? `БИБЛИЯ МИРА:\n"""\n${worldBible}\n"""` : "БИБЛИЯ МИРА: не заполнена."}
+
+${bookPlan ? `ПЛАН КНИГИ:\n"""\n${bookPlan}\n"""` : "ПЛАН КНИГИ: не заполнен."}
+
+РЕДАКТОРСКИЙ БРИФ АВТОРА:
+- Цель сцены: ${editorialBrief?.goal || "не указана"}
+- Изменение к финалу: ${editorialBrief?.change || "не указано"}
+- Эмоциональный поворот: ${editorialBrief?.emotion || "не указан"}
+- Нельзя менять: ${editorialBrief?.protectedFacts || "не указано"}
+- Нужный эффект: ${editorialBrief?.effect || "не указан"}
+
+Требования к отчёту:
+1. Готовность должна быть одной краткой формулировкой (например, «Глава готова к бережной редактуре»), без обещаний публикационного качества.
+2. Summary — 2–4 предложения: что в сцене работает и на чём основан вывод.
+3. Checks — от 3 до 6 конкретных проверок по сюжету, канону, цели сцены, эмоциональной дуге, фокусу и голосу. Для статуса используйте только: ok, attention, missing.
+4. Risks — только реальные, проверяемые вручную зоны риска. Если оснований нет, верните пустой массив. Не называйте риск, если текст и контекст не позволяют его подтвердить.
+5. Для каждого риска дайте короткое действие автора; не переписывайте фрагменты и не выдавайте сам текст главы.
+6. NextStep — одно конкретное следующее действие автора.
+7. Не используйте Markdown, ссылки, эмодзи, оценочные обещания и скрытые рассуждения.`;
     } else if (action === "brainstorm") {
       systemInstruction = "You are a brilliant literary consultant and creative brainstorming partner. You generate rich, evocative, original ideas.";
       prompt = `Generate a set of 4-5 inspiring, creative, and non-cliché ideas for a story.
@@ -646,7 +688,43 @@ ${text || ""}
     let responseMimeType: string | undefined = undefined;
     let responseSchema: any = undefined;
 
-    if (action === "parse_import") {
+    if (action === "editorial_review") {
+      responseMimeType = "application/json";
+      responseSchema = {
+        type: Type.OBJECT,
+        properties: {
+          readiness: { type: Type.STRING, description: "Краткий статус готовности главы" },
+          summary: { type: Type.STRING, description: "Краткое доказательное редакторское резюме" },
+          checks: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                title: { type: Type.STRING },
+                status: { type: Type.STRING, description: "Только ok, attention или missing" },
+                note: { type: Type.STRING },
+              },
+              required: ["title", "status", "note"],
+            },
+          },
+          risks: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                level: { type: Type.STRING, description: "Только high, medium или low" },
+                title: { type: Type.STRING },
+                explanation: { type: Type.STRING },
+                suggestion: { type: Type.STRING },
+              },
+              required: ["level", "title", "explanation", "suggestion"],
+            },
+          },
+          nextStep: { type: Type.STRING },
+        },
+        required: ["readiness", "summary", "checks", "risks", "nextStep"],
+      };
+    } else if (action === "parse_import") {
       responseMimeType = "application/json";
       responseSchema = {
         type: Type.OBJECT,
@@ -827,6 +905,44 @@ ${text || ""}
     });
 
     let reply = llmTextOrThrow(llmResult, "Генерация");
+
+    if (action === "editorial_review") {
+      let review: any;
+      try {
+        review = JSON.parse(reply);
+      } catch {
+        throw new Error("Редакторская проверка вернула некорректный отчёт. Попробуйте ещё раз.");
+      }
+      if (!review || typeof review.summary !== "string" || !Array.isArray(review.checks) || !Array.isArray(review.risks)) {
+        throw new Error("Редакторская проверка вернула неполный отчёт. Попробуйте ещё раз.");
+      }
+      const allowedStatuses = new Set(["ok", "attention", "missing"]);
+      const allowedLevels = new Set(["high", "medium", "low"]);
+      review.checks = review.checks.slice(0, 6).map((check: any) => ({
+        title: String(check?.title || "Проверка"),
+        status: allowedStatuses.has(check?.status) ? check.status : "attention",
+        note: String(check?.note || "Требуется просмотр автора."),
+      }));
+      review.risks = review.risks.slice(0, 4).map((risk: any) => ({
+        level: allowedLevels.has(risk?.level) ? risk.level : "low",
+        title: String(risk?.title || "Зона ручной проверки"),
+        explanation: String(risk?.explanation || "Нужен внимательный просмотр автора."),
+        suggestion: String(risk?.suggestion || "Сверьте этот фрагмент с замыслом главы."),
+      }));
+      return res.json({
+        review: {
+          readiness: String(review.readiness || "Редакторская проверка завершена"),
+          summary: review.summary,
+          checks: review.checks,
+          risks: review.risks,
+          nextStep: String(review.nextStep || "Просмотрите отмеченные места и при необходимости запустите безопасную редактуру."),
+        },
+        provider: llmResult.provider,
+        model: llmResult.model,
+        llmProvider: llmProvider || undefined,
+      });
+    }
+
     let humanizeReport: Awaited<ReturnType<typeof humanizeProseDraft>>["humanizeReport"] | null = null;
 
     if (humanizeEnabled && (action === "continue" || action === "improve") && reply.length > 200) {
