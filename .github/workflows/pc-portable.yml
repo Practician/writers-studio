@@ -1,0 +1,79 @@
+name: PC Portable Release
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-portable:
+    name: Сборка PC Portable
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@v4
+
+      - name: Настроить Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Установить зависимости
+        run: npm ci
+
+      - name: Запустить тесты
+        run: npm test
+
+      - name: Собрать frontend и backend bundle
+        run: npm run build
+
+      - name: Сформировать Portable пакет
+        id: package
+        run: |
+          VERSION=$(node -p "require('./package.json').version || '1.1.0'")
+          FOLDER_NAME="WritersStudio-PC-Portable-v${VERSION}-build-${{ github.run_number }}"
+          ZIP_NAME="${FOLDER_NAME}.zip"
+
+          mkdir -p "$FOLDER_NAME"
+          cp -r dist "$FOLDER_NAME/"
+          cp .env.example "$FOLDER_NAME/"
+          cp portable/README.txt "$FOLDER_NAME/README.txt"
+          cp portable/START-Writers-Studio.cmd "$FOLDER_NAME/START-Writers-Studio.cmd"
+          cp portable/START-Writers-Studio.sh "$FOLDER_NAME/START-Writers-Studio.sh"
+          chmod +x "$FOLDER_NAME/START-Writers-Studio.sh"
+
+          zip -r "$ZIP_NAME" "$FOLDER_NAME"
+
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+          echo "folder_name=$FOLDER_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Сохранить архив как workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.folder_name }}
+          path: ${{ steps.package.outputs.zip_name }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Опубликовать релиз в GitHub Releases
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: v${{ steps.package.outputs.version }}-build-${{ github.run_number }}
+          RELEASE_TITLE: Writers Studio PC Portable v${{ steps.package.outputs.version }} · сборка ${{ github.run_number }}
+          ZIP_NAME: ${{ steps.package.outputs.zip_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            "$ZIP_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$RELEASE_TITLE" \
+            --notes "Портативная сборка Writers Studio для Windows, macOS и Linux (коммит $GITHUB_SHA). Требуется Node.js 20+." \
+            --latest
